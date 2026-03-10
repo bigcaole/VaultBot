@@ -52,6 +52,9 @@ go run ./cmd/server
 docker compose up --build
 ```
 
+## 生产部署说明
+见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。
+
 ## Telegram 指令
 - `/add`：引导式输入平台、用户名、密码等信息
 - `/find <platform>`：模糊搜索并返回卡片（包含密码）
