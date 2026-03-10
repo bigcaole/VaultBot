@@ -1,0 +1,50 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: vaultbot
+      POSTGRES_PASSWORD: vaultbot
+      POSTGRES_DB: vaultbot
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vaultbot"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "6379:6379"
+  vaultbot:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      HTTP_ADDR: ":8080"
+      DB_URL: "postgres://vaultbot:vaultbot@db:5432/vaultbot?sslmode=disable"
+      REDIS_URL: "redis://redis:6379/0"
+      MASTER_KEY: "REPLACE_WITH_32_BYTES_OR_BASE64"
+      API_KEY: "REPLACE_WITH_API_KEY"
+      TELEGRAM_BOT_TOKEN: ""
+      FEISHU_APP_ID: ""
+      FEISHU_APP_SECRET: ""
+      FEISHU_VERIFICATION_TOKEN: ""
+      FEISHU_ENCRYPT_KEY: ""
+      ALLOWED_USER_IDS: ""
+      PASSWORD_TOKEN_TTL_SECONDS: "60"
+    ports:
+      - "8080:8080"
+volumes:
+  db-data:
