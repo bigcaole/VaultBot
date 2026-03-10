@@ -21,6 +21,19 @@ type addState struct {
 	Notes             string `json:"notes"`
 }
 
+type searchState struct {
+	Field string `json:"field"`
+}
+
+type editState struct {
+	AccountID string `json:"account_id"`
+	Field     string `json:"field"`
+}
+
+type categoryState struct {
+	Categories []string `json:"categories"`
+}
+
 const (
 	stepPlatform = 1
 	stepCategory = 2
@@ -37,18 +50,50 @@ func stateKey(prefix string, userID string) string {
 }
 
 func loadState(ctx context.Context, s *store.RedisStore, key string) (*addState, error) {
+	return loadJSON[addState](ctx, s, key)
+}
+
+func saveState(ctx context.Context, s *store.RedisStore, key string, st *addState, ttl time.Duration) error {
+	return saveJSON(ctx, s, key, st, ttl)
+}
+
+func loadSearchState(ctx context.Context, s *store.RedisStore, key string) (*searchState, error) {
+	return loadJSON[searchState](ctx, s, key)
+}
+
+func saveSearchState(ctx context.Context, s *store.RedisStore, key string, st *searchState, ttl time.Duration) error {
+	return saveJSON(ctx, s, key, st, ttl)
+}
+
+func loadEditState(ctx context.Context, s *store.RedisStore, key string) (*editState, error) {
+	return loadJSON[editState](ctx, s, key)
+}
+
+func saveEditState(ctx context.Context, s *store.RedisStore, key string, st *editState, ttl time.Duration) error {
+	return saveJSON(ctx, s, key, st, ttl)
+}
+
+func loadCategoryState(ctx context.Context, s *store.RedisStore, key string) (*categoryState, error) {
+	return loadJSON[categoryState](ctx, s, key)
+}
+
+func saveCategoryState(ctx context.Context, s *store.RedisStore, key string, st *categoryState, ttl time.Duration) error {
+	return saveJSON(ctx, s, key, st, ttl)
+}
+
+func loadJSON[T any](ctx context.Context, s *store.RedisStore, key string) (*T, error) {
 	val, err := s.Get(ctx, key)
 	if err != nil || val == "" {
 		return nil, err
 	}
-	var st addState
+	var st T
 	if err := json.Unmarshal([]byte(val), &st); err != nil {
 		return nil, err
 	}
 	return &st, nil
 }
 
-func saveState(ctx context.Context, s *store.RedisStore, key string, st *addState, ttl time.Duration) error {
+func saveJSON(ctx context.Context, s *store.RedisStore, key string, st any, ttl time.Duration) error {
 	b, err := json.Marshal(st)
 	if err != nil {
 		return err

@@ -56,9 +56,12 @@ docker compose up --build
 见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。
 
 ## Telegram 指令
+- `/start`：显示功能入口（菜单按钮）
 - `/add`：引导式输入平台、用户名、密码等信息
-- `/find <platform>`：模糊搜索并返回卡片（包含密码）
+- `/find <platform>`：按平台关键词查询（无参数时进入分类浏览）
+- `/search`：按字段搜索
 - `/list`：按分类查看所有记录（不包含密码）
+- `/ttl`：设置自动删除时间（3/5/10 分钟）
 - `/cancel`：取消当前引导流程
 
 ## 飞书交互
