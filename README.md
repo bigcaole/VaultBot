@@ -10,25 +10,31 @@
 - 阅后即焚：发送包含密码的消息后 60 秒自动删除
 
 ## 环境变量
+说明包含用途与获取方式，所有值以环境变量注入。
+
 必需：
-- `DB_URL`：PostgreSQL 连接串，例如 `postgres://user:pass@localhost:5432/vaultbot?sslmode=disable`
-- `REDIS_URL`：Redis 连接串，例如 `redis://localhost:6379/0`
-- `MASTER_KEY`：32 字节主密钥（原始字符串或 base64 编码），绝不落库
-- `API_KEY`：REST API 的访问密钥
+| 变量 | 说明 | 获取方式 |
+| --- | --- | --- |
+| `DB_URL` | PostgreSQL 连接串，例如 `postgres://user:pass@localhost:5432/vaultbot?sslmode=disable` | 本地/容器中创建数据库与账号后拼接连接串 |
+| `REDIS_URL` | Redis 连接串，例如 `redis://localhost:6379/0` | 本地/容器中启动 Redis 后拼接连接串 |
+| `MASTER_KEY` | 32 字节主密钥（原始字符串或 base64 编码），绝不落库 | 使用 `openssl rand -base64 32` 生成后保存 |
+| `API_KEY` | REST API 的访问密钥 | 自行生成高强度随机串并安全保存 |
 
 可选：
-- `HTTP_ADDR`：HTTP 监听地址，默认 `:8080`
-- `TELEGRAM_BOT_TOKEN`：Telegram Bot Token
-- `FEISHU_APP_ID` / `FEISHU_APP_SECRET`：飞书应用凭证
-- `FEISHU_VERIFICATION_TOKEN` / `FEISHU_ENCRYPT_KEY`：飞书事件验证（如需）
-- `ALLOWED_USER_IDS`：白名单用户 ID，逗号分隔
-  - Telegram：填写用户数字 ID
-  - 飞书：填写 `user_id` 或 `open_id`
-- `DELETE_AFTER_SECONDS`：阅后即焚延迟秒数，默认 60
-- `DB_CONNECT_RETRIES`：数据库连接重试次数，默认 10
-- `DB_CONNECT_DELAY_SECONDS`：数据库连接重试间隔秒数，默认 3
-- `ALLOW_GROUP_CHAT`：是否允许群聊使用机器人，默认 `false`
-- `PASSWORD_TOKEN_TTL_SECONDS`：获取明文密码的一次性令牌有效期（秒），默认 60
+| 变量 | 说明 | 获取方式 |
+| --- | --- | --- |
+| `HTTP_ADDR` | HTTP 监听地址，默认 `:8080` | 按部署端口设置 |
+| `TELEGRAM_BOT_TOKEN` | Telegram 机器人 Token | 通过 BotFather 创建机器人获取 |
+| `FEISHU_APP_ID` | 飞书应用 App ID | 飞书开发者后台创建应用获取 |
+| `FEISHU_APP_SECRET` | 飞书应用 App Secret | 飞书开发者后台创建应用获取 |
+| `FEISHU_VERIFICATION_TOKEN` | 飞书事件回调验证 Token | 飞书事件订阅页面配置后获取 |
+| `FEISHU_ENCRYPT_KEY` | 飞书事件回调加密 Key | 飞书事件订阅页面配置后获取 |
+| `ALLOWED_USER_IDS` | 白名单用户 ID，逗号分隔（Telegram 数字 ID 或 飞书 user_id/open_id） | Telegram 可通过 `/id` 机器人或用户信息获取；飞书在事件回调 payload 中获取 |
+| `DELETE_AFTER_SECONDS` | 阅后即焚延迟秒数，默认 60 | 按策略设置 |
+| `DB_CONNECT_RETRIES` | 数据库连接重试次数，默认 10 | 按部署稳定性设置 |
+| `DB_CONNECT_DELAY_SECONDS` | 数据库连接重试间隔秒数，默认 3 | 按部署稳定性设置 |
+| `ALLOW_GROUP_CHAT` | 是否允许群聊使用机器人，默认 `false` | 需要群聊时设为 `true` |
+| `PASSWORD_TOKEN_TTL_SECONDS` | 明文密码一次性令牌有效期（秒），默认 60 | 按安全策略设置 |
 
 示例生成 MASTER_KEY：
 ```bash
