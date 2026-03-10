@@ -35,6 +35,17 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 	if err != nil {
 		return nil, err
 	}
+	commands := []tgbotapi.BotCommand{
+		{Command: "start", Description: "显示功能入口"},
+		{Command: "add", Description: "新增账号（引导式输入）"},
+		{Command: "find", Description: "按平台关键词查询"},
+		{Command: "list", Description: "列出全部记录"},
+		{Command: "cancel", Description: "取消当前引导流程"},
+		{Command: "help", Description: "显示帮助"},
+	}
+	if _, err := bot.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
+		log.Printf("telegram set commands failed: %v", err)
+	}
 	b := &TelegramBot{bot: bot, cfg: cfg, db: db, store: store, masterKey: masterKey, ctx: ctx}
 	go b.run()
 	return b, nil
@@ -69,14 +80,14 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 		b.reply(msg.Chat.ID, "无权限访问此机器人。")
 		return
 	}
-	allowed, err := b.store.Allow(context.Background(), "rate:tg:"+userID, 20, time.Minute)
-	if err != nil {
-		b.reply(msg.Chat.ID, "系统繁忙，请稍后重试。")
-		return
-	}
-	if !allowed {
-		b.reply(msg.Chat.ID, "请求过于频繁，请稍后重试。")
-		return
+	if b.store != nil {
+		allowed, err := b.store.Allow(context.Background(), "rate:tg:"+userID, 20, time.Minute)
+		if err != nil {
+			log.Printf("telegram rate limit error user_id=%s err=%v", userID, err)
+		} else if !allowed {
+			b.reply(msg.Chat.ID, "请求过于频繁，请稍后重试。")
+			return
+		}
 	}
 
 	if msg.IsCommand() {
@@ -84,8 +95,12 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 			_ = b.store.Del(context.Background(), stateKey("tg:add", userID))
 		}
 		switch msg.Command() {
+		case "start":
+			b.sendHelp(msg.Chat.ID, true)
 		case "add":
 			b.startAddFlow(msg.Chat.ID, userID)
+		case "help":
+			b.sendHelp(msg.Chat.ID, false)
 		case "find":
 			b.handleFind(msg.Chat.ID, strings.TrimSpace(msg.CommandArguments()))
 		case "list":
@@ -94,7 +109,7 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 			_ = b.store.Del(context.Background(), stateKey("tg:add", userID))
 			b.reply(msg.Chat.ID, "已取消当前操作。")
 		default:
-			b.reply(msg.Chat.ID, "未知指令。可用指令：/add /find /list /cancel")
+			b.sendHelp(msg.Chat.ID, false)
 		}
 		return
 	}
@@ -103,15 +118,30 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 }
 
 func (b *TelegramBot) startAddFlow(chatID int64, userID string) {
+	if b.store == nil {
+		b.reply(chatID, "会话存储不可用，请检查 Redis 配置。")
+		return
+	}
 	st := &addState{Step: stepPlatform}
-	_ = saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute)
+	if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute); err != nil {
+		b.reply(chatID, "系统繁忙，请稍后重试。")
+		return
+	}
 	b.reply(chatID, "请输入平台名称：")
 }
 
 func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 	key := stateKey("tg:add", userID)
+	if b.store == nil {
+		b.reply(chatID, "会话存储不可用，请检查 Redis 配置。")
+		return
+	}
 	st, err := loadState(context.Background(), b.store, key)
-	if err != nil || st == nil {
+	if err != nil {
+		b.reply(chatID, "系统繁忙，请稍后重试。")
+		return
+	}
+	if st == nil {
 		return
 	}
 
@@ -119,17 +149,26 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 	case stepPlatform:
 		st.Platform = text
 		st.Step = stepCategory
-		_ = saveState(context.Background(), b.store, key, st, 15*time.Minute)
+		if err := saveState(context.Background(), b.store, key, st, 15*time.Minute); err != nil {
+			b.reply(chatID, "系统繁忙，请稍后重试。")
+			return
+		}
 		b.reply(chatID, "请输入分类（如：工作/生活/金融）：")
 	case stepCategory:
 		st.Category = text
 		st.Step = stepUsername
-		_ = saveState(context.Background(), b.store, key, st, 15*time.Minute)
+		if err := saveState(context.Background(), b.store, key, st, 15*time.Minute); err != nil {
+			b.reply(chatID, "系统繁忙，请稍后重试。")
+			return
+		}
 		b.reply(chatID, "请输入用户名：")
 	case stepUsername:
 		st.Username = text
 		st.Step = stepPassword
-		_ = saveState(context.Background(), b.store, key, st, 15*time.Minute)
+		if err := saveState(context.Background(), b.store, key, st, 15*time.Minute); err != nil {
+			b.reply(chatID, "系统繁忙，请稍后重试。")
+			return
+		}
 		b.reply(chatID, "请输入密码（不会写入日志）：")
 	case stepPassword:
 		ciphertext, nonce, err := crypto.Encrypt(text, b.masterKey)
@@ -140,7 +179,10 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 		st.EncryptedPassword = ciphertext
 		st.Nonce = nonce
 		st.Step = stepEmail
-		_ = saveState(context.Background(), b.store, key, st, 15*time.Minute)
+		if err := saveState(context.Background(), b.store, key, st, 15*time.Minute); err != nil {
+			b.reply(chatID, "系统繁忙，请稍后重试。")
+			return
+		}
 		b.reply(chatID, "请输入邮箱（可输入 - 跳过）：")
 	case stepEmail:
 		if text == "-" {
@@ -148,7 +190,10 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 		}
 		st.Email = text
 		st.Step = stepPhone
-		_ = saveState(context.Background(), b.store, key, st, 15*time.Minute)
+		if err := saveState(context.Background(), b.store, key, st, 15*time.Minute); err != nil {
+			b.reply(chatID, "系统繁忙，请稍后重试。")
+			return
+		}
 		b.reply(chatID, "请输入手机号（可输入 - 跳过）：")
 	case stepPhone:
 		if text == "-" {
@@ -156,7 +201,10 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 		}
 		st.Phone = text
 		st.Step = stepNotes
-		_ = saveState(context.Background(), b.store, key, st, 15*time.Minute)
+		if err := saveState(context.Background(), b.store, key, st, 15*time.Minute); err != nil {
+			b.reply(chatID, "系统繁忙，请稍后重试。")
+			return
+		}
 		b.reply(chatID, "请输入备注（可输入 - 跳过）：")
 	case stepNotes:
 		if text == "-" {
@@ -240,6 +288,34 @@ func (b *TelegramBot) handleList(chatID int64) {
 
 func (b *TelegramBot) reply(chatID int64, text string) {
 	if _, err := b.bot.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
+		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
+	}
+}
+
+func (b *TelegramBot) sendHelp(chatID int64, withKeyboard bool) {
+	help := "可用指令说明：\n" +
+		"/start - 显示功能入口\n" +
+		"/add - 新增账号（引导式输入）\n" +
+		"/find <platform> - 按平台关键词查询（返回含密码）\n" +
+		"/list - 列出全部记录（不含密码）\n" +
+		"/cancel - 取消当前引导流程\n" +
+		"/help - 显示帮助"
+	msg := tgbotapi.NewMessage(chatID, help)
+	if withKeyboard {
+		keyboard := tgbotapi.NewReplyKeyboard(
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton("/add"),
+				tgbotapi.NewKeyboardButton("/find github"),
+			),
+			tgbotapi.NewKeyboardButtonRow(
+				tgbotapi.NewKeyboardButton("/list"),
+				tgbotapi.NewKeyboardButton("/cancel"),
+			),
+		)
+		keyboard.ResizeKeyboard = true
+		msg.ReplyMarkup = keyboard
+	}
+	if _, err := b.bot.Send(msg); err != nil {
 		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
 	}
 }
