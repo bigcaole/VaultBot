@@ -45,19 +45,8 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 	if err != nil {
 		return nil, err
 	}
-	commands := []tgbotapi.BotCommand{
-		{Command: "menu", Description: "打开主菜单"},
-		{Command: "start", Description: "显示功能入口"},
-		{Command: "add", Description: "新增账号（引导式输入）"},
-		{Command: "find", Description: "浏览分类或按平台关键词查询"},
-		{Command: "search", Description: "按字段搜索"},
-		{Command: "list", Description: "按分类浏览"},
-		{Command: "ttl", Description: "设置自动删除时间"},
-		{Command: "cancel", Description: "取消当前引导流程"},
-		{Command: "help", Description: "显示帮助"},
-	}
-	if _, err := bot.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
-		log.Printf("telegram set commands failed: %v", err)
+	if _, err := bot.Request(tgbotapi.NewDeleteMyCommands()); err != nil {
+		log.Printf("telegram delete commands failed: %v", err)
 	}
 	b := &TelegramBot{
 		bot:       bot,

@@ -1,10 +1,10 @@
 # VaultBot
 
-高安全性云端密码管理机器人（Telegram & 飞书），使用 Go + Gin + PostgreSQL + Redis，密码采用 AES-256-GCM 加密。
+高安全性云端密码管理机器人（Telegram），使用 Go + Gin + PostgreSQL + Redis，密码采用 AES-256-GCM 加密。
 
 ## 主要特性
 - AES-256-GCM 加密，随机 Nonce，避免相同密码产生相同密文
-- Telegram / 飞书机器人交互
+- Telegram 机器人交互
 - Redis 用于限流与会话状态管理
 - REST API（API Key 认证）
 - 阅后即焚：发送包含密码的消息后 60 秒自动删除
@@ -25,11 +25,7 @@
 | --- | --- | --- |
 | `HTTP_ADDR` | HTTP 监听地址，默认 `:8080` | 按部署端口设置 |
 | `TELEGRAM_BOT_TOKEN` | Telegram 机器人 Token | 通过 BotFather 创建机器人获取 |
-| `FEISHU_APP_ID` | 飞书应用 App ID | 飞书开发者后台创建应用获取 |
-| `FEISHU_APP_SECRET` | 飞书应用 App Secret | 飞书开发者后台创建应用获取 |
-| `FEISHU_VERIFICATION_TOKEN` | 飞书事件回调验证 Token | 飞书事件订阅页面配置后获取 |
-| `FEISHU_ENCRYPT_KEY` | 飞书事件回调加密 Key | 飞书事件订阅页面配置后获取 |
-| `ALLOWED_USER_IDS` | 白名单用户 ID，逗号分隔（Telegram 数字 ID 或 飞书 user_id/open_id） | Telegram 可通过 `/id` 机器人或用户信息获取；飞书在事件回调 payload 中获取 |
+| `ALLOWED_USER_IDS` | 白名单用户 ID，逗号分隔（Telegram 数字 ID） | Telegram 可通过 `/id` 机器人或用户信息获取 |
 | `DELETE_AFTER_SECONDS` | 阅后即焚延迟秒数，默认 60 | 按策略设置 |
 | `DB_CONNECT_RETRIES` | 数据库连接重试次数，默认 10 | 按部署稳定性设置 |
 | `DB_CONNECT_DELAY_SECONDS` | 数据库连接重试间隔秒数，默认 3 | 按部署稳定性设置 |
@@ -64,11 +60,6 @@ docker compose up --build
 - `/list`：按分类查看所有记录（不包含密码）
 - `/ttl`：设置自动删除时间（3/5/10 分钟）
 - `/cancel`：取消当前引导流程
-
-## 飞书交互
-- `/add`：引导式输入
-- `/find <platform>`：返回交互式卡片，提供“点击复制”按钮
-- `/list`：按分类查看所有记录
 
 ## REST API
 所有接口需携带 `X-API-Key` 请求头。

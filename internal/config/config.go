@@ -14,10 +14,6 @@ type Config struct {
 	RedisURL                string
 	MasterKey               string
 	TelegramBotToken        string
-	FeishuAppID             string
-	FeishuAppSecret         string
-	FeishuVerificationToken string
-	FeishuEncryptKey        string
 	APIKey                  string
 	AllowedUserIDs          map[string]struct{}
 	HTTPAddr                string
@@ -36,10 +32,6 @@ func Load() (*Config, error) {
 	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
 	cfg.MasterKey = strings.TrimSpace(os.Getenv("MASTER_KEY"))
 	cfg.TelegramBotToken = strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
-	cfg.FeishuAppID = strings.TrimSpace(os.Getenv("FEISHU_APP_ID"))
-	cfg.FeishuAppSecret = strings.TrimSpace(os.Getenv("FEISHU_APP_SECRET"))
-	cfg.FeishuVerificationToken = strings.TrimSpace(os.Getenv("FEISHU_VERIFICATION_TOKEN"))
-	cfg.FeishuEncryptKey = strings.TrimSpace(os.Getenv("FEISHU_ENCRYPT_KEY"))
 	cfg.APIKey = strings.TrimSpace(os.Getenv("API_KEY"))
 	cfg.HTTPAddr = strings.TrimSpace(os.Getenv("HTTP_ADDR"))
 	if cfg.HTTPAddr == "" {

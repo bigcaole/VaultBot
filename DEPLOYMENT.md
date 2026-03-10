@@ -89,5 +89,5 @@ openresty -s reload
 
 ## 6. 常见问题
 - 访问 443 正常但 `include_password=1` 报错：确认代理是否设置了 `X-Forwarded-Proto: https`。
-- 机器人回调：Telegram/飞书回调地址请配置为 `https://your-domain.com/...`，并确保 443 可达。
+- 机器人回调：Telegram 回调地址请配置为 `https://your-domain.com/...`，并确保 443 可达。
 - 如果需要临时对外暴露 8080：将 `HTTP_ADDR=:8080` 并放行防火墙，但不推荐生产环境使用。

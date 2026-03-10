@@ -54,15 +54,6 @@ func main() {
 		log.Println("Telegram bot started")
 	}
 
-	if cfg.FeishuAppID != "" && cfg.FeishuAppSecret != "" {
-		feishuBot, err := bot.NewFeishuBot(cfg, db, redisStore, masterKey)
-		if err != nil {
-			log.Fatal(err)
-		}
-		r.POST("/lark/events", feishuBot.HandleEvent)
-		log.Println("Feishu bot handler registered")
-	}
-
 	server := &http.Server{
 		Addr:    cfg.HTTPAddr,
 		Handler: r,
