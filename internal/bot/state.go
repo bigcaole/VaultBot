@@ -35,7 +35,8 @@ type categoryState struct {
 }
 
 type categoryEditState struct {
-	Old string `json:"old"`
+	Mode string `json:"mode"`
+	Old  string `json:"old"`
 }
 
 const (

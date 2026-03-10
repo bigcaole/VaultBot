@@ -100,6 +100,9 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 		return
 	}
 	userID := fmt.Sprintf("%d", msg.From.ID)
+	if msg.MessageID != 0 {
+		b.deleteMessageLaterForUser(msg.Chat.ID, msg.MessageID, userID)
+	}
 	if !IsAllowed(b.cfg.AllowedUserIDs, userID) {
 		b.reply(msg.Chat.ID, "无权限访问此机器人。")
 		return
@@ -406,6 +409,7 @@ func (b *TelegramBot) sendCategoryMenu(chatID int64, userID string, messageID in
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("✏️修改", fmt.Sprintf("cat_edit:%d", i)))
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("🗑删除", fmt.Sprintf("cat_del:%d", i)))
 	}
+	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("➕新增分类", "cat_add"))
 	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("返回主菜单", "back:main"))
 	keyboard := buildInlineKeyboard(buttons, 3)
 	b.updateMenu(chatID, userID, messageID, "请选择分类：", keyboard)
@@ -547,6 +551,18 @@ func (b *TelegramBot) handleCategoryEditInput(chatID int64, userID string, text 
 		b.updateMenu(chatID, userID, 0, "请输入新的分类名称。", backMainKeyboard())
 		return true
 	}
+	if st.Mode == "add" {
+		stAdd := &addState{
+			Step:     stepUsername,
+			Category: text,
+		}
+		if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), stAdd, 15*time.Minute); err != nil {
+			b.updateMenu(chatID, userID, 0, "系统繁忙，请稍后重试。", backMainKeyboard())
+			return true
+		}
+		b.updateMenu(chatID, userID, 0, "请输入用户名：", backMainKeyboard())
+		return true
+	}
 	if err := b.db.Model(&model.Account{}).Where("category = ?", st.Old).Update("category", text).Error; err != nil {
 		b.updateMenu(chatID, userID, 0, "分类更新失败。", backMainKeyboard())
 		return true
@@ -636,7 +652,7 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 			break
 		}
 		old := st.Categories[idx]
-		_ = saveCategoryEditState(context.Background(), b.store, stateKey("tg:cat_edit", userID), &categoryEditState{Old: old}, editTTL)
+		_ = saveCategoryEditState(context.Background(), b.store, stateKey("tg:cat_edit", userID), &categoryEditState{Mode: "edit", Old: old}, editTTL)
 		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入新的分类名称：", backMainKeyboard())
 	case strings.HasPrefix(data, "cat_del:"):
 		if b.store == nil {
@@ -680,6 +696,13 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		} else {
 			b.updateMenu(chatID, userID, q.Message.MessageID, "分类已删除。", backMainKeyboard())
 		}
+	case data == "cat_add":
+		if b.store == nil {
+			b.reply(chatID, "会话存储不可用，请检查 Redis 配置。")
+			break
+		}
+		_ = saveCategoryEditState(context.Background(), b.store, stateKey("tg:cat_edit", userID), &categoryEditState{Mode: "add"}, editTTL)
+		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入新的分类名称：", backMainKeyboard())
 	case strings.HasPrefix(data, "acct:"):
 		id := strings.TrimPrefix(data, "acct:")
 		b.sendAccountDetail(chatID, userID, q.Message.MessageID, id)
