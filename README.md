@@ -56,6 +56,7 @@ docker compose up --build
 见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。
 
 ## Telegram 指令
+- `/menu`：打开主菜单
 - `/start`：显示功能入口（菜单按钮）
 - `/add`：引导式输入平台、用户名、密码等信息
 - `/find <platform>`：按平台关键词查询（无参数时进入分类浏览）

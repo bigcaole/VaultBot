@@ -43,6 +43,7 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 		return nil, err
 	}
 	commands := []tgbotapi.BotCommand{
+		{Command: "menu", Description: "打开主菜单"},
 		{Command: "start", Description: "显示功能入口"},
 		{Command: "add", Description: "新增账号（引导式输入）"},
 		{Command: "find", Description: "浏览分类或按平台关键词查询"},
@@ -105,6 +106,8 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 	if msg.IsCommand() {
 		b.clearUserStates(userID, msg.Command())
 		switch msg.Command() {
+		case "menu":
+			b.sendMainMenu(msg.Chat.ID)
 		case "start":
 			b.sendMainMenu(msg.Chat.ID)
 		case "add":
@@ -284,6 +287,7 @@ func (b *TelegramBot) reply(chatID int64, text string) {
 
 func (b *TelegramBot) sendHelp(chatID int64, withKeyboard bool) {
 	help := "可用指令说明：\n" +
+		"/menu - 打开主菜单\n" +
 		"/start - 显示功能入口\n" +
 		"/add - 新增账号（引导式输入）\n" +
 		"/find <platform> - 按平台关键词查询（返回含密码）\n" +
@@ -385,7 +389,7 @@ func (b *TelegramBot) clearUserStates(userID string, command string) {
 }
 
 func (b *TelegramBot) sendMainMenu(chatID int64) {
-	text := "VaultBot 功能入口："
+	text := "VaultBot 主菜单："
 	msg := tgbotapi.NewMessage(chatID, text)
 	keyboard := tgbotapi.NewReplyKeyboard(
 		tgbotapi.NewKeyboardButtonRow(
