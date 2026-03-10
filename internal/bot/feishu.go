@@ -313,7 +313,7 @@ func (b *FeishuBot) sendText(chatID string, text string) error {
 			Content(string(content)).
 			Build()).
 		Build()
-	_, _, err := b.client.Im.Message.Create(context.Background(), req)
+	_, err := b.client.Im.Message.Create(context.Background(), req)
 	return err
 }
 
@@ -352,11 +352,14 @@ func (b *FeishuBot) sendCard(chatID string, acc model.Account, password string) 
 			Content(string(content)).
 			Build()).
 		Build()
-	resp, _, err := b.client.Im.Message.Create(context.Background(), req)
+	resp, err := b.client.Im.Message.Create(context.Background(), req)
 	if err != nil {
 		return "", err
 	}
-	return resp.Data.MessageId, nil
+	if resp == nil || resp.Data == nil || resp.Data.MessageId == nil {
+		return "", nil
+	}
+	return *resp.Data.MessageId, nil
 }
 
 func (b *FeishuBot) deleteMessageLater(messageID string) {
@@ -374,7 +377,7 @@ func (b *FeishuBot) deleteMessageWithRetry(messageID string) {
 		req := larkim.NewDeleteMessageReqBuilder().
 			MessageId(messageID).
 			Build()
-		_, _, err := b.client.Im.Message.Delete(context.Background(), req)
+		_, err := b.client.Im.Message.Delete(context.Background(), req)
 		if err == nil {
 			return
 		}
