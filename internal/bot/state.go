@@ -34,6 +34,10 @@ type categoryState struct {
 	Categories []string `json:"categories"`
 }
 
+type categoryEditState struct {
+	Old string `json:"old"`
+}
+
 const (
 	stepPlatform = 1
 	stepCategory = 2
@@ -78,6 +82,14 @@ func loadCategoryState(ctx context.Context, s *store.RedisStore, key string) (*c
 }
 
 func saveCategoryState(ctx context.Context, s *store.RedisStore, key string, st *categoryState, ttl time.Duration) error {
+	return saveJSON(ctx, s, key, st, ttl)
+}
+
+func loadCategoryEditState(ctx context.Context, s *store.RedisStore, key string) (*categoryEditState, error) {
+	return loadJSON[categoryEditState](ctx, s, key)
+}
+
+func saveCategoryEditState(ctx context.Context, s *store.RedisStore, key string, st *categoryEditState, ttl time.Duration) error {
 	return saveJSON(ctx, s, key, st, ttl)
 }
 
