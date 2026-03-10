@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"vaultbot/internal/config"
@@ -25,6 +26,8 @@ type TelegramBot struct {
 	store     *store.RedisStore
 	masterKey []byte
 	ctx       context.Context
+	menuMu    sync.Mutex
+	menuMsg   map[string]int
 }
 
 const (
@@ -56,7 +59,15 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 	if _, err := bot.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
 		log.Printf("telegram set commands failed: %v", err)
 	}
-	b := &TelegramBot{bot: bot, cfg: cfg, db: db, store: store, masterKey: masterKey, ctx: ctx}
+	b := &TelegramBot{
+		bot:       bot,
+		cfg:       cfg,
+		db:        db,
+		store:     store,
+		masterKey: masterKey,
+		ctx:       ctx,
+		menuMsg:   make(map[string]int),
+	}
 	go b.run()
 	return b, nil
 }
@@ -107,31 +118,31 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 		b.clearUserStates(userID, msg.Command())
 		switch msg.Command() {
 		case "menu":
-			b.sendMainMenu(msg.Chat.ID)
+			b.sendMainMenu(msg.Chat.ID, userID, 0)
 		case "start":
-			b.sendMainMenu(msg.Chat.ID)
+			b.sendMainMenu(msg.Chat.ID, userID, 0)
 		case "add":
 			b.startAddFlow(msg.Chat.ID, userID)
 		case "help":
-			b.sendHelp(msg.Chat.ID, false)
+			b.sendHelpMenu(msg.Chat.ID, userID, 0)
 		case "find":
 			query := strings.TrimSpace(msg.CommandArguments())
 			if query == "" {
-				b.sendCategoryMenu(msg.Chat.ID, userID)
+				b.sendCategoryMenu(msg.Chat.ID, userID, 0)
 				return
 			}
 			b.handleFind(msg.Chat.ID, userID, query)
 		case "search":
-			b.sendSearchFieldMenu(msg.Chat.ID, userID)
+			b.sendSearchFieldMenu(msg.Chat.ID, userID, 0)
 		case "ttl":
-			b.sendTTLMenu(msg.Chat.ID, userID)
+			b.sendTTLMenu(msg.Chat.ID, userID, 0)
 		case "list":
-			b.sendCategoryMenu(msg.Chat.ID, userID)
+			b.sendCategoryMenu(msg.Chat.ID, userID, 0)
 		case "cancel":
 			_ = b.store.Del(context.Background(), stateKey("tg:add", userID))
 			b.reply(msg.Chat.ID, "已取消当前操作。")
 		default:
-			b.sendHelp(msg.Chat.ID, false)
+			b.sendHelpMenu(msg.Chat.ID, userID, 0)
 		}
 		return
 	}
@@ -264,54 +275,23 @@ func (b *TelegramBot) finishAddFlow(chatID int64, userID string, st *addState) {
 
 func (b *TelegramBot) handleFind(chatID int64, userID string, query string) {
 	if query == "" {
-		b.reply(chatID, "请输入平台关键词，例如：/find github")
+		b.updateMenu(chatID, userID, 0, "请输入平台关键词，例如：/find github", backMainKeyboard())
 		return
 	}
 	var accounts []model.Account
 	if err := b.db.Where("platform ILIKE ?", "%"+query+"%").Order("platform").Find(&accounts).Error; err != nil {
-		b.reply(chatID, "查询失败。")
+		b.updateMenu(chatID, userID, 0, "查询失败。", backMainKeyboard())
 		return
 	}
 	if len(accounts) == 0 {
-		b.reply(chatID, "未找到记录。")
+		b.updateMenu(chatID, userID, 0, "未找到记录。", backMainKeyboard())
 		return
 	}
-	b.sendAccountsMenu(chatID, userID, "搜索结果：", accounts)
+	b.sendAccountsMenu(chatID, userID, 0, "搜索结果：", accounts)
 }
 
 func (b *TelegramBot) reply(chatID int64, text string) {
 	if _, err := b.bot.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
-	}
-}
-
-func (b *TelegramBot) sendHelp(chatID int64, withKeyboard bool) {
-	help := "可用指令说明：\n" +
-		"/menu - 打开主菜单\n" +
-		"/start - 显示功能入口\n" +
-		"/add - 新增账号（引导式输入）\n" +
-		"/find <platform> - 按平台关键词查询（返回含密码）\n" +
-		"/search - 按字段搜索\n" +
-		"/list - 列出全部记录（不含密码）\n" +
-		"/ttl - 设置自动删除时间\n" +
-		"/cancel - 取消当前引导流程\n" +
-		"/help - 显示帮助"
-	msg := tgbotapi.NewMessage(chatID, help)
-	if withKeyboard {
-		keyboard := tgbotapi.NewReplyKeyboard(
-			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton("/add"),
-				tgbotapi.NewKeyboardButton("/find github"),
-			),
-			tgbotapi.NewKeyboardButtonRow(
-				tgbotapi.NewKeyboardButton("/list"),
-				tgbotapi.NewKeyboardButton("/cancel"),
-			),
-		)
-		keyboard.ResizeKeyboard = true
-		msg.ReplyMarkup = keyboard
-	}
-	if _, err := b.bot.Send(msg); err != nil {
 		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
 	}
 }
@@ -388,32 +368,20 @@ func (b *TelegramBot) clearUserStates(userID string, command string) {
 	}
 }
 
-func (b *TelegramBot) sendMainMenu(chatID int64) {
+func (b *TelegramBot) sendMainMenu(chatID int64, userID string, messageID int) {
 	text := "VaultBot 主菜单："
-	msg := tgbotapi.NewMessage(chatID, text)
-	keyboard := tgbotapi.NewReplyKeyboard(
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("/add"),
-			tgbotapi.NewKeyboardButton("/find"),
-		),
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("/search"),
-			tgbotapi.NewKeyboardButton("/list"),
-		),
-		tgbotapi.NewKeyboardButtonRow(
-			tgbotapi.NewKeyboardButton("/ttl"),
-			tgbotapi.NewKeyboardButton("/help"),
-			tgbotapi.NewKeyboardButton("/cancel"),
-		),
-	)
-	keyboard.ResizeKeyboard = true
-	msg.ReplyMarkup = keyboard
-	if _, err := b.bot.Send(msg); err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
+	buttons := []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("新增账号", "menu:add"),
+		tgbotapi.NewInlineKeyboardButtonData("分类浏览", "menu:find"),
+		tgbotapi.NewInlineKeyboardButtonData("字段搜索", "menu:search"),
+		tgbotapi.NewInlineKeyboardButtonData("自动删除", "menu:ttl"),
+		tgbotapi.NewInlineKeyboardButtonData("帮助", "menu:help"),
 	}
+	keyboard := buildInlineKeyboard(buttons, 2)
+	b.updateMenu(chatID, userID, messageID, text, keyboard)
 }
 
-func (b *TelegramBot) sendCategoryMenu(chatID int64, userID string) {
+func (b *TelegramBot) sendCategoryMenu(chatID int64, userID string, messageID int) {
 	var categories []string
 	if err := b.db.Model(&model.Account{}).Distinct("category").Order("category").Pluck("category", &categories).Error; err != nil {
 		b.reply(chatID, "查询失败。")
@@ -431,29 +399,24 @@ func (b *TelegramBot) sendCategoryMenu(chatID int64, userID string) {
 		data := fmt.Sprintf("cat:%d", i)
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(cat, data))
 	}
-	msg := tgbotapi.NewMessage(chatID, "请选择分类：")
-	msg.ReplyMarkup = buildInlineKeyboard(buttons, 2)
-	if _, err := b.bot.Send(msg); err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
-	}
+	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("返回主菜单", "back:main"))
+	keyboard := buildInlineKeyboard(buttons, 2)
+	b.updateMenu(chatID, userID, messageID, "请选择分类：", keyboard)
 }
 
-func (b *TelegramBot) sendAccountsMenu(chatID int64, userID string, title string, accounts []model.Account) {
+func (b *TelegramBot) sendAccountsMenu(chatID int64, userID string, messageID int, title string, accounts []model.Account) {
 	buttons := make([]tgbotapi.InlineKeyboardButton, 0, len(accounts))
 	for _, acc := range accounts {
 		label := fmt.Sprintf("%s (%s)", acc.Platform, acc.Username)
 		data := "acct:" + acc.ID.String()
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(label, data))
 	}
-	msg := tgbotapi.NewMessage(chatID, title)
-	msg.ReplyMarkup = buildInlineKeyboard(buttons, 1)
-	if _, err := b.bot.Send(msg); err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
-	}
+	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("返回分类", "back:categories"))
+	keyboard := buildInlineKeyboard(buttons, 1)
+	b.updateMenu(chatID, userID, messageID, title, keyboard)
 }
 
-func (b *TelegramBot) sendSearchFieldMenu(chatID int64, userID string) {
-	msg := tgbotapi.NewMessage(chatID, "请选择搜索字段：")
+func (b *TelegramBot) sendSearchFieldMenu(chatID int64, userID string, messageID int) {
 	buttons := []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("平台", "searchfield:platform"),
 		tgbotapi.NewInlineKeyboardButtonData("分类", "searchfield:category"),
@@ -462,11 +425,10 @@ func (b *TelegramBot) sendSearchFieldMenu(chatID int64, userID string) {
 		tgbotapi.NewInlineKeyboardButtonData("手机号", "searchfield:phone"),
 		tgbotapi.NewInlineKeyboardButtonData("备注", "searchfield:notes"),
 		tgbotapi.NewInlineKeyboardButtonData("全部字段", "searchfield:all"),
+		tgbotapi.NewInlineKeyboardButtonData("返回主菜单", "back:main"),
 	}
-	msg.ReplyMarkup = buildInlineKeyboard(buttons, 2)
-	if _, err := b.bot.Send(msg); err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
-	}
+	keyboard := buildInlineKeyboard(buttons, 2)
+	b.updateMenu(chatID, userID, messageID, "请选择搜索字段：", keyboard)
 }
 
 func (b *TelegramBot) handleSearchInput(chatID int64, userID string, text string) bool {
@@ -479,7 +441,7 @@ func (b *TelegramBot) handleSearchInput(chatID int64, userID string, text string
 	}
 	_ = b.store.Del(context.Background(), stateKey("tg:search", userID))
 	if text == "" {
-		b.reply(chatID, "请输入关键词。")
+		b.updateMenu(chatID, userID, 0, "请输入关键词。", backMainKeyboard())
 		return true
 	}
 	var accounts []model.Account
@@ -503,14 +465,14 @@ func (b *TelegramBot) handleSearchInput(chatID int64, userID string, text string
 			like, like, like, like, like, like)
 	}
 	if err := query.Order("platform").Find(&accounts).Error; err != nil {
-		b.reply(chatID, "查询失败。")
+		b.updateMenu(chatID, userID, 0, "查询失败。", backMainKeyboard())
 		return true
 	}
 	if len(accounts) == 0 {
-		b.reply(chatID, "未找到记录。")
+		b.updateMenu(chatID, userID, 0, "未找到记录。", backMainKeyboard())
 		return true
 	}
-	b.sendAccountsMenu(chatID, userID, "搜索结果：", accounts)
+	b.sendAccountsMenu(chatID, userID, 0, "搜索结果：", accounts)
 	return true
 }
 
@@ -524,12 +486,12 @@ func (b *TelegramBot) handleEditInput(chatID int64, userID string, text string) 
 	}
 	_ = b.store.Del(context.Background(), stateKey("tg:edit", userID))
 	if text == "" {
-		b.reply(chatID, "请输入内容。")
+		b.updateMenu(chatID, userID, 0, "请输入内容。", backMainKeyboard())
 		return true
 	}
 	var account model.Account
 	if err := b.db.First(&account, "id = ?", st.AccountID).Error; err != nil {
-		b.reply(chatID, "记录不存在。")
+		b.updateMenu(chatID, userID, 0, "记录不存在。", backMainKeyboard())
 		return true
 	}
 	switch st.Field {
@@ -554,14 +516,14 @@ func (b *TelegramBot) handleEditInput(chatID int64, userID string, text string) 
 	case "notes":
 		account.Notes = text
 	default:
-		b.reply(chatID, "不支持的字段。")
+		b.updateMenu(chatID, userID, 0, "不支持的字段。", backMainKeyboard())
 		return true
 	}
 	if err := b.db.Save(&account).Error; err != nil {
-		b.reply(chatID, "更新失败。")
+		b.updateMenu(chatID, userID, 0, "更新失败。", backMainKeyboard())
 		return true
 	}
-	b.reply(chatID, "已更新。")
+	b.updateMenu(chatID, userID, 0, "已更新。", backMainKeyboard())
 	return true
 }
 
@@ -582,17 +544,21 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 	data := q.Data
 	switch {
 	case data == "menu:find":
-		b.sendCategoryMenu(chatID, userID)
+		b.sendCategoryMenu(chatID, userID, q.Message.MessageID)
 	case data == "menu:search":
-		b.sendSearchFieldMenu(chatID, userID)
+		b.sendSearchFieldMenu(chatID, userID, q.Message.MessageID)
 	case data == "menu:ttl":
-		b.sendTTLMenu(chatID, userID)
+		b.sendTTLMenu(chatID, userID, q.Message.MessageID)
+	case data == "menu:help":
+		b.sendHelpMenu(chatID, userID, q.Message.MessageID)
+	case data == "menu:add":
+		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入 /add 开始新增账号。", backMainKeyboard())
 	case strings.HasPrefix(data, "ttl:"):
 		if b.store != nil {
 			seconds, err := strconv.Atoi(strings.TrimPrefix(data, "ttl:"))
 			if err == nil && seconds > 0 {
 				_ = b.store.Set(context.Background(), "tg:ttl:"+userID, strconv.Itoa(seconds), 30*24*time.Hour)
-				b.reply(chatID, "已设置自动删除时间为 "+strconv.Itoa(seconds/60)+" 分钟。")
+				b.updateMenu(chatID, userID, q.Message.MessageID, "已设置自动删除时间为 "+strconv.Itoa(seconds/60)+" 分钟。", backMainKeyboard())
 			}
 		}
 	case strings.HasPrefix(data, "searchfield:"):
@@ -600,7 +566,7 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		if b.store != nil {
 			_ = saveSearchState(context.Background(), b.store, stateKey("tg:search", userID), &searchState{Field: field}, searchTTL)
 		}
-		b.reply(chatID, "请输入关键词：")
+		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入关键词：", backMainKeyboard())
 	case strings.HasPrefix(data, "cat:"):
 		if b.store == nil {
 			b.reply(chatID, "会话存储不可用，请检查 Redis 配置。")
@@ -619,17 +585,17 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		_ = b.store.Set(context.Background(), stateKey("tg:lastcat", userID), category, menuTTL)
 		var accounts []model.Account
 		if err := b.db.Where("category = ?", category).Order("platform").Find(&accounts).Error; err != nil {
-			b.reply(chatID, "查询失败。")
+			b.updateMenu(chatID, userID, q.Message.MessageID, "查询失败。", backMainKeyboard())
 			break
 		}
 		if len(accounts) == 0 {
-			b.reply(chatID, "该分类暂无记录。")
+			b.updateMenu(chatID, userID, q.Message.MessageID, "该分类暂无记录。", backMainKeyboard())
 			break
 		}
-		b.sendAccountsMenu(chatID, userID, "请选择平台：", accounts)
+		b.sendAccountsMenu(chatID, userID, q.Message.MessageID, "请选择平台：", accounts)
 	case strings.HasPrefix(data, "acct:"):
 		id := strings.TrimPrefix(data, "acct:")
-		b.sendAccountDetail(chatID, userID, id)
+		b.sendAccountDetail(chatID, userID, q.Message.MessageID, id)
 	case strings.HasPrefix(data, "copy:"):
 		parts := strings.SplitN(strings.TrimPrefix(data, "copy:"), ":", 2)
 		if len(parts) != 2 {
@@ -639,7 +605,7 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		b.sendCopyValue(chatID, userID, id, field)
 	case strings.HasPrefix(data, "edit:"):
 		id := strings.TrimPrefix(data, "edit:")
-		b.sendEditFieldMenu(chatID, userID, id)
+		b.sendEditFieldMenu(chatID, userID, q.Message.MessageID, id)
 	case strings.HasPrefix(data, "editfield:"):
 		parts := strings.SplitN(strings.TrimPrefix(data, "editfield:"), ":", 2)
 		if len(parts) != 2 {
@@ -649,37 +615,38 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		if b.store != nil {
 			_ = saveEditState(context.Background(), b.store, stateKey("tg:edit", userID), &editState{AccountID: id, Field: field}, editTTL)
 		}
-		b.reply(chatID, "请输入新的值：")
+		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入新的值：", backMainKeyboard())
 	case strings.HasPrefix(data, "del:"):
 		id := strings.TrimPrefix(data, "del:")
-		b.sendDeleteConfirm(chatID, id)
+		b.sendDeleteConfirm(chatID, userID, q.Message.MessageID, id)
 	case strings.HasPrefix(data, "delconfirm:"):
 		id := strings.TrimPrefix(data, "delconfirm:")
 		if err := b.db.Delete(&model.Account{}, "id = ?", id).Error; err != nil {
-			b.reply(chatID, "删除失败。")
+			b.updateMenu(chatID, userID, q.Message.MessageID, "删除失败。", backMainKeyboard())
 		} else {
-			b.reply(chatID, "已删除。")
+			b.updateMenu(chatID, userID, q.Message.MessageID, "已删除。", backMainKeyboard())
 		}
 	case data == "back:categories":
-		b.sendCategoryMenu(chatID, userID)
+		b.sendCategoryMenu(chatID, userID, q.Message.MessageID)
+	case data == "back:main":
+		b.sendMainMenu(chatID, userID, q.Message.MessageID)
 	}
 	_ = b.answerCallback(q, "")
 }
 
-func (b *TelegramBot) sendAccountDetail(chatID int64, userID string, id string) {
+func (b *TelegramBot) sendAccountDetail(chatID int64, userID string, messageID int, id string) {
 	var account model.Account
 	if err := b.db.First(&account, "id = ?", id).Error; err != nil {
-		b.reply(chatID, "记录不存在。")
+		b.updateMenu(chatID, userID, messageID, "记录不存在。", backMainKeyboard())
 		return
 	}
 	pwd, err := crypto.Decrypt(account.EncryptedPassword, account.Nonce, b.masterKey)
 	if err != nil {
-		b.reply(chatID, "解密失败。")
+		b.updateMenu(chatID, userID, messageID, "解密失败。", backMainKeyboard())
 		return
 	}
 	text := fmt.Sprintf("平台: %s\n分类: %s\n用户名: %s\n密码: %s\n邮箱: %s\n手机: %s\n备注: %s",
 		account.Platform, account.Category, account.Username, pwd, account.Email, account.Phone, account.Notes)
-	msg := tgbotapi.NewMessage(chatID, text)
 	buttons := []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("复制用户名", "copy:username:"+account.ID.String()),
 		tgbotapi.NewInlineKeyboardButtonData("复制密码", "copy:password:"+account.ID.String()),
@@ -696,17 +663,11 @@ func (b *TelegramBot) sendAccountDetail(chatID int64, userID string, id string) 
 	actionRow := []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("修改", "edit:"+account.ID.String()),
 		tgbotapi.NewInlineKeyboardButtonData("删除", "del:"+account.ID.String()),
-		tgbotapi.NewInlineKeyboardButtonData("返回", "back:categories"),
+		tgbotapi.NewInlineKeyboardButtonData("返回分类", "back:categories"),
 	}
 	keyboard := buildInlineKeyboard(buttons, 2)
 	keyboard.InlineKeyboard = append(keyboard.InlineKeyboard, actionRow)
-	msg.ReplyMarkup = keyboard
-	sent, err := b.bot.Send(msg)
-	if err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
-		return
-	}
-	b.deleteMessageLaterForUser(chatID, sent.MessageID, userID)
+	b.updateMenu(chatID, userID, messageID, text, keyboard)
 }
 
 func (b *TelegramBot) sendCopyValue(chatID int64, userID string, id string, field string) {
@@ -749,8 +710,7 @@ func (b *TelegramBot) sendCopyValue(chatID int64, userID string, id string, fiel
 	b.deleteMessageLaterForUser(chatID, sent.MessageID, userID)
 }
 
-func (b *TelegramBot) sendEditFieldMenu(chatID int64, userID string, id string) {
-	msg := tgbotapi.NewMessage(chatID, "请选择需要修改的字段：")
+func (b *TelegramBot) sendEditFieldMenu(chatID int64, userID string, messageID int, id string) {
 	buttons := []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("平台", "editfield:platform:"+id),
 		tgbotapi.NewInlineKeyboardButtonData("分类", "editfield:category:"+id),
@@ -759,38 +719,34 @@ func (b *TelegramBot) sendEditFieldMenu(chatID int64, userID string, id string) 
 		tgbotapi.NewInlineKeyboardButtonData("邮箱", "editfield:email:"+id),
 		tgbotapi.NewInlineKeyboardButtonData("手机号", "editfield:phone:"+id),
 		tgbotapi.NewInlineKeyboardButtonData("备注", "editfield:notes:"+id),
+		tgbotapi.NewInlineKeyboardButtonData("返回分类", "back:categories"),
 	}
-	msg.ReplyMarkup = buildInlineKeyboard(buttons, 2)
-	if _, err := b.bot.Send(msg); err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
-	}
+	keyboard := buildInlineKeyboard(buttons, 2)
+	b.updateMenu(chatID, userID, messageID, "请选择需要修改的字段：", keyboard)
 }
 
-func (b *TelegramBot) sendDeleteConfirm(chatID int64, id string) {
-	msg := tgbotapi.NewMessage(chatID, "确认删除该记录？")
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+func (b *TelegramBot) sendDeleteConfirm(chatID int64, userID string, messageID int, id string) {
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("确认删除", "delconfirm:"+id),
 			tgbotapi.NewInlineKeyboardButtonData("取消", "back:categories"),
 		),
 	)
-	if _, err := b.bot.Send(msg); err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
-	}
+	b.updateMenu(chatID, userID, messageID, "确认删除该记录？", keyboard)
 }
 
-func (b *TelegramBot) sendTTLMenu(chatID int64, userID string) {
-	msg := tgbotapi.NewMessage(chatID, "请选择自动删除时间：")
-	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+func (b *TelegramBot) sendTTLMenu(chatID int64, userID string, messageID int) {
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("3 分钟", "ttl:180"),
 			tgbotapi.NewInlineKeyboardButtonData("5 分钟", "ttl:300"),
 			tgbotapi.NewInlineKeyboardButtonData("10 分钟", "ttl:600"),
 		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("返回主菜单", "back:main"),
+		),
 	)
-	if _, err := b.bot.Send(msg); err != nil {
-		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
-	}
+	b.updateMenu(chatID, userID, messageID, "请选择自动删除时间：", keyboard)
 }
 
 func (b *TelegramBot) answerCallback(q *tgbotapi.CallbackQuery, text string) error {
@@ -812,4 +768,78 @@ func buildInlineKeyboard(buttons []tgbotapi.InlineKeyboardButton, perRow int) tg
 		rows = append(rows, buttons[i:end])
 	}
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func (b *TelegramBot) sendHelpMenu(chatID int64, userID string, messageID int) {
+	help := "可用指令说明：\n" +
+		"/menu - 打开主菜单\n" +
+		"/start - 显示功能入口\n" +
+		"/add - 新增账号（引导式输入）\n" +
+		"/find <platform> - 按平台关键词查询（无参数进入分类浏览）\n" +
+		"/search - 按字段搜索\n" +
+		"/list - 按分类浏览\n" +
+		"/ttl - 设置自动删除时间\n" +
+		"/cancel - 取消当前引导流程\n" +
+		"/help - 显示帮助"
+	b.updateMenu(chatID, userID, messageID, help, backMainKeyboard())
+}
+
+func (b *TelegramBot) updateMenu(chatID int64, userID string, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
+	if messageID > 0 {
+		if b.editMenuMessage(chatID, messageID, text, keyboard) == nil {
+			b.setMenuMsgID(userID, messageID)
+			return
+		}
+	}
+	if stored := b.getMenuMsgID(userID); stored > 0 {
+		if b.editMenuMessage(chatID, stored, text, keyboard) == nil {
+			return
+		}
+	}
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+	sent, err := b.bot.Send(msg)
+	if err != nil {
+		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
+		return
+	}
+	b.setMenuMsgID(userID, sent.MessageID)
+}
+
+func (b *TelegramBot) editMenuMessage(chatID int64, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) error {
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
+	edit.ReplyMarkup = &keyboard
+	_, err := b.bot.Request(edit)
+	return err
+}
+
+func (b *TelegramBot) getMenuMsgID(userID string) int {
+	if b.store != nil {
+		val, err := b.store.Get(context.Background(), "tg:menu:msg:"+userID)
+		if err == nil && val != "" {
+			if id, err := strconv.Atoi(val); err == nil {
+				return id
+			}
+		}
+	}
+	b.menuMu.Lock()
+	defer b.menuMu.Unlock()
+	return b.menuMsg[userID]
+}
+
+func (b *TelegramBot) setMenuMsgID(userID string, messageID int) {
+	if b.store != nil {
+		_ = b.store.Set(context.Background(), "tg:menu:msg:"+userID, strconv.Itoa(messageID), 24*time.Hour)
+	}
+	b.menuMu.Lock()
+	defer b.menuMu.Unlock()
+	b.menuMsg[userID] = messageID
+}
+
+func backMainKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("返回主菜单", "back:main"),
+		),
+	)
 }
