@@ -28,6 +28,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	var legacyKey []byte
+	if cfg.LegacyMasterKey != "" || cfg.LegacyPepper != "" {
+		legacyKey, err = crypto.DeriveKey(cfg.LegacyMasterKey, cfg.LegacyPepper)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	db, err := model.Init(cfg.DBURL, cfg.DBConnectRetries, cfg.DBConnectDelay)
 	if err != nil {
@@ -72,13 +79,13 @@ func main() {
 		}
 		c.JSON(status, resp)
 	})
-	api.RegisterRoutes(r, db, derivedKey, cfg.APIKey, redisStore, cfg.PasswordTokenTTL)
+	api.RegisterRoutes(r, db, derivedKey, legacyKey, cfg.APIKey, redisStore, cfg.PasswordTokenTTL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	if cfg.TelegramBotToken != "" {
-		if _, err := bot.StartTelegramBot(ctx, cfg, db, redisStore, derivedKey); err != nil {
+		if _, err := bot.StartTelegramBot(ctx, cfg, db, redisStore, derivedKey, legacyKey); err != nil {
 			log.Fatal(err)
 		}
 		log.Println("Telegram bot started")

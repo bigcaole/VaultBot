@@ -124,6 +124,22 @@ func Decrypt(ciphertextB64 string, nonceB64 string, masterKey []byte) (string, e
 	return out, nil
 }
 
+// DecryptWithFallback 尝试使用主密钥解密，失败时使用旧密钥。
+func DecryptWithFallback(ciphertextB64 string, nonceB64 string, masterKey []byte, legacyKey []byte) (string, bool, error) {
+	plaintext, err := Decrypt(ciphertextB64, nonceB64, masterKey)
+	if err == nil {
+		return plaintext, false, nil
+	}
+	if len(legacyKey) == 0 {
+		return "", false, err
+	}
+	plaintext, err = Decrypt(ciphertextB64, nonceB64, legacyKey)
+	if err != nil {
+		return "", false, err
+	}
+	return plaintext, true, nil
+}
+
 func decodeMasterKey(raw string) ([]byte, error) {
 	if len(raw) == 32 {
 		return []byte(raw), nil

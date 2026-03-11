@@ -20,6 +20,8 @@
 | `REDIS_URL` | Redis 连接串，例如 `redis://localhost:6379/0` | 本地/容器中启动 Redis 后拼接连接串 |
 | `MASTER_KEY` | 32 字节主密钥（原始字符串或 base64 编码），绝不落库 | 使用 `openssl rand -base64 32` 生成后保存 |
 | `SECRET_PEPPER` | 额外胡椒粉字符串，用于 KDF 派生 | 使用 `openssl rand -base64 32` 生成后保存 |
+| `LEGACY_MASTER_KEY` | 旧主密钥（可选，用于升级后解密旧数据） | 旧版本的 MASTER_KEY |
+| `LEGACY_SECRET_PEPPER` | 旧胡椒粉（可选，用于升级后解密旧数据） | 旧版本的 SECRET_PEPPER |
 | `UNLOCK_PIN` | 密码查询会话 PIN（/unlock 使用） | 自行生成高强度随机串并安全保存 |
 | `BACKUP_PASSWORD` | 备份加密口令 | 自行生成高强度随机串并安全保存 |
 | `API_KEY` | REST API 的访问密钥 | 自行生成高强度随机串并安全保存 |
@@ -60,6 +62,8 @@ docker build --build-arg PG_MAJOR=18 -t vaultbot .
 `docker-compose.yml` 中同样支持 `build.args.PG_MAJOR`。
 
 运行时会自动检测 `pg_dump` 与数据库版本，若 `pg_dump` 版本低于数据库版本，会在备份时提示需要的 `PG_MAJOR`。
+
+备份加密使用 AES-256-CTR + HMAC-SHA256，密钥由 `BACKUP_PASSWORD` 经 Argon2id 派生。
 
 ## 生产部署说明
 见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。

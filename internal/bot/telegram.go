@@ -26,6 +26,7 @@ type TelegramBot struct {
 	db         *gorm.DB
 	store      *store.RedisStore
 	derivedKey []byte
+	legacyKey  []byte
 	ctx        context.Context
 	menuMu     sync.Mutex
 	menuMsg    map[string]int
@@ -41,7 +42,7 @@ const (
 )
 
 // StartTelegramBot initializes the bot and starts the update loop.
-func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, store *store.RedisStore, derivedKey []byte) (*TelegramBot, error) {
+func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, store *store.RedisStore, derivedKey []byte, legacyKey []byte) (*TelegramBot, error) {
 	if cfg.TelegramBotToken == "" {
 		return nil, fmt.Errorf("TELEGRAM_BOT_TOKEN is required to start Telegram bot")
 	}
@@ -73,6 +74,7 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 		db:         db,
 		store:      store,
 		derivedKey: derivedKey,
+		legacyKey:  legacyKey,
 		ctx:        ctx,
 		menuMsg:    make(map[string]int),
 		cmdScope:   make(map[int64]string),
@@ -966,10 +968,18 @@ func (b *TelegramBot) sendAccountDetail(chatID int64, userID string, messageID i
 		b.updateMenu(chatID, userID, messageID, "记录不存在。", backMainKeyboard())
 		return
 	}
-	pwd, err := crypto.Decrypt(account.EncryptedPassword, account.Nonce, b.derivedKey)
+	pwd, usedLegacy, err := crypto.DecryptWithFallback(account.EncryptedPassword, account.Nonce, b.derivedKey, b.legacyKey)
 	if err != nil {
 		b.updateMenu(chatID, userID, messageID, "解密失败。", backMainKeyboard())
 		return
+	}
+	if usedLegacy {
+		if ciphertext, nonce, err := crypto.Encrypt(pwd, b.derivedKey); err == nil {
+			_ = b.db.Model(&account).Updates(map[string]any{
+				"encrypted_password": ciphertext,
+				"nonce":              nonce,
+			}).Error
+		}
 	}
 	text := fmt.Sprintf("平台: %s\n分类: %s\n用户名: %s\n密码: %s\n邮箱: %s\n手机: %s\n备注: %s",
 		account.Platform, account.Category, account.Username, pwd, account.Email, account.Phone, account.Notes)
@@ -1011,10 +1021,18 @@ func (b *TelegramBot) sendCopyValue(chatID int64, userID string, id string, fiel
 		if !b.requireUnlocked(chatID, userID) {
 			return
 		}
-		pwd, err := crypto.Decrypt(account.EncryptedPassword, account.Nonce, b.derivedKey)
+		pwd, usedLegacy, err := crypto.DecryptWithFallback(account.EncryptedPassword, account.Nonce, b.derivedKey, b.legacyKey)
 		if err != nil {
 			b.reply(chatID, "解密失败。")
 			return
+		}
+		if usedLegacy {
+			if ciphertext, nonce, err := crypto.Encrypt(pwd, b.derivedKey); err == nil {
+				_ = b.db.Model(&account).Updates(map[string]any{
+					"encrypted_password": ciphertext,
+					"nonce":              nonce,
+				}).Error
+			}
 		}
 		value = pwd
 	case "email":

@@ -16,11 +16,11 @@ import (
 )
 
 // RegisterRoutes registers API routes with API key auth.
-func RegisterRoutes(r *gin.Engine, db *gorm.DB, masterKey []byte, apiKey string, store *store.RedisStore, pwdTokenTTL time.Duration) {
+func RegisterRoutes(r *gin.Engine, db *gorm.DB, masterKey []byte, legacyKey []byte, apiKey string, store *store.RedisStore, pwdTokenTTL time.Duration) {
 	api := r.Group("/api", apiKeyMiddleware(apiKey), RateLimitMiddleware(store, 120, time.Minute))
 	api.GET("/accounts", listAccounts(db))
 	api.POST("/accounts", createAccount(db, masterKey))
-	api.GET("/accounts/:id", getAccount(db, masterKey, store))
+	api.GET("/accounts/:id", getAccount(db, masterKey, legacyKey, store))
 	api.PUT("/accounts/:id", updateAccount(db, masterKey))
 	api.DELETE("/accounts/:id", deleteAccount(db))
 	api.POST("/password-token", createPasswordToken(store, pwdTokenTTL))
@@ -128,7 +128,7 @@ func createAccount(db *gorm.DB, masterKey []byte) gin.HandlerFunc {
 	}
 }
 
-func getAccount(db *gorm.DB, masterKey []byte, store *store.RedisStore) gin.HandlerFunc {
+func getAccount(db *gorm.DB, masterKey []byte, legacyKey []byte, store *store.RedisStore) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		var account model.Account
 		if err := db.First(&account, "id = ?", c.Param("id")).Error; err != nil {
@@ -149,8 +149,16 @@ func getAccount(db *gorm.DB, masterKey []byte, store *store.RedisStore) gin.Hand
 				c.JSON(http.StatusForbidden, gin.H{"error": "invalid password token"})
 				return
 			}
-			pwd, err := crypto.Decrypt(account.EncryptedPassword, account.Nonce, masterKey)
+			pwd, usedLegacy, err := crypto.DecryptWithFallback(account.EncryptedPassword, account.Nonce, masterKey, legacyKey)
 			if err == nil {
+				if usedLegacy {
+					if ciphertext, nonce, err := crypto.Encrypt(pwd, masterKey); err == nil {
+						_ = db.Model(&account).Updates(map[string]any{
+							"encrypted_password": ciphertext,
+							"nonce":              nonce,
+						}).Error
+					}
+				}
 				c.JSON(http.StatusOK, gin.H{
 					"account":  toAccountResponse(account),
 					"password": pwd,

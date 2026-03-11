@@ -14,6 +14,8 @@ type Config struct {
 	RedisURL          string
 	MasterKey         string
 	SecretPepper      string
+	LegacyMasterKey   string
+	LegacyPepper      string
 	UnlockPIN         string
 	BackupPassword    string
 	TelegramBotToken  string
@@ -37,6 +39,8 @@ func Load() (*Config, error) {
 	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
 	cfg.MasterKey = strings.TrimSpace(os.Getenv("MASTER_KEY"))
 	cfg.SecretPepper = strings.TrimSpace(os.Getenv("SECRET_PEPPER"))
+	cfg.LegacyMasterKey = strings.TrimSpace(os.Getenv("LEGACY_MASTER_KEY"))
+	cfg.LegacyPepper = strings.TrimSpace(os.Getenv("LEGACY_SECRET_PEPPER"))
 	cfg.UnlockPIN = strings.TrimSpace(os.Getenv("UNLOCK_PIN"))
 	cfg.BackupPassword = strings.TrimSpace(os.Getenv("BACKUP_PASSWORD"))
 	cfg.TelegramBotToken = strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))

@@ -2,7 +2,13 @@ package bot
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -16,6 +22,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/robfig/cron/v3"
+	"golang.org/x/crypto/argon2"
 	"gorm.io/gorm"
 )
 
@@ -146,8 +153,7 @@ func createBackupFile(ctx context.Context, cfg *config.Config, schemaOnly bool) 
 		cleanup()
 		return "", func() {}, err
 	}
-	env := append(os.Environ(), "BACKUP_PASSWORD="+cfg.BackupPassword)
-	if err := execCmd(backupCtx, "openssl", []string{"enc", "-aes-256-gcm", "-salt", "-pbkdf2", "-iter", "200000", "-pass", "env:BACKUP_PASSWORD", "-in", gzFile, "-out", encFile}, env); err != nil {
+	if err := encryptFileWithPassword(gzFile, encFile, cfg.BackupPassword); err != nil {
 		cleanup()
 		return "", func() {}, err
 	}
@@ -245,4 +251,110 @@ func execCmdOutput(ctx context.Context, name string, args []string, env []string
 		return "", fmt.Errorf("%s %v: %w: %s", name, args, err, strings.TrimSpace(string(out)))
 	}
 	return string(out), nil
+}
+
+func encryptFileWithPassword(inPath string, outPath string, password string) error {
+	if strings.TrimSpace(password) == "" {
+		return fmt.Errorf("BACKUP_PASSWORD not configured")
+	}
+	in, err := os.Open(inPath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = out.Close()
+	}()
+
+	salt := make([]byte, 16)
+	if _, err := rand.Read(salt); err != nil {
+		return err
+	}
+	iv := make([]byte, 16)
+	if _, err := rand.Read(iv); err != nil {
+		return err
+	}
+
+	passBytes := []byte(password)
+	keyMaterial := argon2.IDKey(passBytes, salt, 3, 64*1024, 4, 64)
+	zeroize(passBytes)
+	encKey := keyMaterial[:32]
+	macKey := keyMaterial[32:]
+
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		zeroize(keyMaterial)
+		return err
+	}
+	stream := cipher.NewCTR(block, iv)
+	h := hmac.New(sha256.New, macKey)
+
+	if _, err := out.Write([]byte("VBK2")); err != nil {
+		zeroize(keyMaterial)
+		return err
+	}
+	if _, err := out.Write(salt); err != nil {
+		zeroize(keyMaterial)
+		return err
+	}
+	if _, err := out.Write(iv); err != nil {
+		zeroize(keyMaterial)
+		return err
+	}
+	if _, err := h.Write([]byte("VBK2")); err != nil {
+		zeroize(keyMaterial)
+		return err
+	}
+	if _, err := h.Write(salt); err != nil {
+		zeroize(keyMaterial)
+		return err
+	}
+	if _, err := h.Write(iv); err != nil {
+		zeroize(keyMaterial)
+		return err
+	}
+
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := in.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			enc := make([]byte, n)
+			stream.XORKeyStream(enc, chunk)
+			if _, err := out.Write(enc); err != nil {
+				zeroize(keyMaterial)
+				return err
+			}
+			if _, err := h.Write(enc); err != nil {
+				zeroize(keyMaterial)
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			zeroize(keyMaterial)
+			return readErr
+		}
+	}
+
+	tag := h.Sum(nil)
+	if _, err := out.Write(tag); err != nil {
+		zeroize(keyMaterial)
+		return err
+	}
+	zeroize(keyMaterial)
+	return nil
+}
+
+func zeroize(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
