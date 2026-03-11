@@ -5,7 +5,8 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o vaultbot ./cmd/server
 
-FROM postgres:18-alpine
+ARG PG_MAJOR=18
+FROM postgres:${PG_MAJOR}-alpine
 RUN apk add --no-cache openssl ca-certificates tzdata \
     && adduser -D -g '' vaultbot
 USER vaultbot

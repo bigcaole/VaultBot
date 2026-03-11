@@ -28,7 +28,10 @@ services:
     volumes:
       - redis-data:/data
   vaultbot:
-    build: .
+    build:
+      context: .
+      args:
+        PG_MAJOR: "18"
     depends_on:
       db:
         condition: service_healthy

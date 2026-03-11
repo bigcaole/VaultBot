@@ -53,12 +53,18 @@ go run ./cmd/server
 docker compose up --build
 ```
 
+如数据库版本升级导致 `pg_dump` 版本不匹配，可通过构建参数调整客户端版本：
+```bash
+docker build --build-arg PG_MAJOR=18 -t vaultbot .
+```
+`docker-compose.yml` 中同样支持 `build.args.PG_MAJOR`。
+
 ## 生产部署说明
 见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。
 
 ## 备份
 内置定时任务每天 22:00 生成加密备份，并发送到 `BACKUP_RECEIVER_IDS`。主菜单支持手动触发备份，`/backup_test` 可验证备份流程。
-如遇到 `pg_dump` 版本不匹配错误，请确保运行环境的 `pg_dump` 版本大于等于数据库版本（默认镜像已使用 Postgres 18 客户端）。
+如遇到 `pg_dump` 版本不匹配错误，请将运行镜像的 `PG_MAJOR` 调整为数据库主版本（例如 18/19）。
 
 ## Telegram 指令
 - `/menu`：打开主菜单
