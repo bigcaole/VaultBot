@@ -223,6 +223,10 @@ func (b *TelegramBot) handleUnlock(chatID int64, userID string, args string) {
 		b.reply(chatID, "用法：/unlock <PIN>")
 		return
 	}
+	if isSixDigitPIN(b.cfg.UnlockPIN) && !isSixDigitPIN(pin) {
+		b.reply(chatID, "PIN 必须为 6 位数字。")
+		return
+	}
 	if b.store == nil {
 		b.reply(chatID, "会话存储不可用，请检查 Redis 配置。")
 		return
@@ -245,7 +249,7 @@ func (b *TelegramBot) requireUnlocked(chatID int64, userID string) bool {
 	}
 	val, err := b.store.Get(context.Background(), unlockKey(userID))
 	if err != nil || val == "" {
-		b.reply(chatID, fmt.Sprintf("请先使用 /unlock <PIN> 解锁，%d 分钟内有效。", int(b.cfg.UnlockTTL.Minutes())))
+		b.reply(chatID, b.unlockHint())
 		return false
 	}
 	return true
@@ -258,7 +262,7 @@ func (b *TelegramBot) requireUnlockedForQuery(chatID int64, userID string, messa
 	}
 	val, err := b.store.Get(context.Background(), unlockKey(userID))
 	if err != nil || val == "" {
-		b.updateMenu(chatID, userID, messageID, fmt.Sprintf("请先使用 /unlock <PIN> 解锁，%d 分钟内有效。", int(b.cfg.UnlockTTL.Minutes())), backMainKeyboard())
+		b.updateMenu(chatID, userID, messageID, b.unlockHint(), backMainKeyboard())
 		return false
 	}
 	return true
@@ -266,6 +270,26 @@ func (b *TelegramBot) requireUnlockedForQuery(chatID int64, userID string, messa
 
 func unlockKey(userID string) string {
 	return "tg:unlock:" + userID
+}
+
+func (b *TelegramBot) unlockHint() string {
+	base := fmt.Sprintf("请先使用 /unlock <PIN> 解锁，%d 分钟内有效。", int(b.cfg.UnlockTTL.Minutes()))
+	if isSixDigitPIN(b.cfg.UnlockPIN) {
+		return base + "（PIN 为 6 位数字）"
+	}
+	return base
+}
+
+func isSixDigitPIN(pin string) bool {
+	if len(pin) != 6 {
+		return false
+	}
+	for _, ch := range pin {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (b *TelegramBot) startAddFlow(chatID int64, userID string) {
@@ -1119,10 +1143,14 @@ func buildInlineKeyboard(buttons []tgbotapi.InlineKeyboardButton, perRow int) tg
 }
 
 func (b *TelegramBot) sendHelpMenu(chatID int64, userID string, messageID int) {
+	unlockLine := "/unlock <PIN> - 解锁密码查询（15 分钟有效）"
+	if isSixDigitPIN(b.cfg.UnlockPIN) {
+		unlockLine = "/unlock <PIN> - 解锁密码查询（15 分钟有效，PIN 为 6 位数字）"
+	}
 	help := "可用指令说明：\n" +
 		"/menu - 打开主菜单\n" +
 		"/start - 显示功能入口\n" +
-		"/unlock <PIN> - 解锁密码查询（15 分钟有效）\n" +
+		unlockLine + "\n" +
 		"/add - 新增账号（引导式输入）\n" +
 		"/find <platform> - 按平台关键词查询（无参数进入分类浏览）\n" +
 		"/search - 按字段搜索\n" +
