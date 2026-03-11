@@ -57,7 +57,8 @@ docker compose up --build
 见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。
 
 ## 备份
-内置定时任务每天 22:00 生成加密备份，并发送到 `BACKUP_RECEIVER_IDS`。主菜单支持手动触发备份。
+内置定时任务每天 22:00 生成加密备份，并发送到 `BACKUP_RECEIVER_IDS`。主菜单支持手动触发备份，`/backup_test` 可验证备份流程。
+如遇到 `pg_dump` 版本不匹配错误，请确保运行环境的 `pg_dump` 版本大于等于数据库版本（默认镜像已使用 Postgres 18 客户端）。
 
 ## Telegram 指令
 - `/menu`：打开主菜单
