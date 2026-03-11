@@ -32,6 +32,10 @@ func StartBackupScheduler(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config
 		return nil, fmt.Errorf("DB_URL is required for backup")
 	}
 
+	if warn := WarnIfPgDumpMismatch(ctx, cfg.DBURL); warn != "" {
+		log.Printf("backup warning: %s", warn)
+	}
+
 	c := cron.New(cron.WithLocation(time.Local))
 	_, err := c.AddFunc("0 22 * * *", func() {
 		if err := runBackup(ctx, bot, cfg, db, receivers, "system", false); err != nil {
@@ -58,6 +62,10 @@ func RunBackupNow(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config,
 	if strings.TrimSpace(cfg.BackupPassword) == "" {
 		return fmt.Errorf("BACKUP_PASSWORD not configured")
 	}
+	if warn := WarnIfPgDumpMismatch(ctx, cfg.DBURL); warn != "" {
+		log.Printf("backup warning: %s", warn)
+		return fmt.Errorf("%s", warn)
+	}
 	return runBackup(ctx, bot, cfg, db, receivers, actor, false)
 }
 
@@ -68,6 +76,9 @@ func RunBackupTest(ctx context.Context, cfg *config.Config) error {
 	}
 	if strings.TrimSpace(cfg.BackupPassword) == "" {
 		return fmt.Errorf("BACKUP_PASSWORD not configured")
+	}
+	if warn := WarnIfPgDumpMismatch(ctx, cfg.DBURL); warn != "" {
+		return fmt.Errorf("%s", warn)
 	}
 	_, cleanup, err := createBackupFile(ctx, cfg, true)
 	if err != nil {
@@ -164,4 +175,74 @@ func parseReceiverIDs(ids map[string]struct{}) []int64 {
 		list = append(list, parsed)
 	}
 	return list
+}
+
+// WarnIfPgDumpMismatch checks pg_dump/server major version mismatch.
+func WarnIfPgDumpMismatch(ctx context.Context, dbURL string) string {
+	if strings.TrimSpace(dbURL) == "" {
+		return ""
+	}
+	serverMajor, err := fetchServerMajor(ctx, dbURL)
+	if err != nil {
+		return fmt.Sprintf("无法获取数据库版本: %v", err)
+	}
+	dumpMajor, err := fetchPgDumpMajor(ctx)
+	if err != nil {
+		return fmt.Sprintf("无法获取 pg_dump 版本: %v", err)
+	}
+	if dumpMajor < serverMajor {
+		return fmt.Sprintf("pg_dump 版本过低（pg_dump=%d, server=%d），请将 PG_MAJOR 设置为 %d+ 并重建镜像", dumpMajor, serverMajor, serverMajor)
+	}
+	return ""
+}
+
+func fetchServerMajor(ctx context.Context, dbURL string) (int, error) {
+	backupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	out, err := execCmdOutput(backupCtx, "psql", []string{"-d", dbURL, "-At", "-c", "SHOW server_version_num;"}, nil)
+	if err != nil {
+		return 0, err
+	}
+	val := strings.TrimSpace(out)
+	if len(val) < 2 {
+		return 0, fmt.Errorf("unexpected server_version_num: %s", val)
+	}
+	num, err := strconv.Atoi(val)
+	if err != nil {
+		return 0, err
+	}
+	return num / 10000, nil
+}
+
+func fetchPgDumpMajor(ctx context.Context) (int, error) {
+	backupCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	out, err := execCmdOutput(backupCtx, "pg_dump", []string{"--version"}, nil)
+	if err != nil {
+		return 0, err
+	}
+	fields := strings.Fields(out)
+	if len(fields) < 3 {
+		return 0, fmt.Errorf("unexpected pg_dump version: %s", strings.TrimSpace(out))
+	}
+	ver := fields[2]
+	parts := strings.SplitN(ver, ".", 2)
+	if len(parts) < 1 {
+		return 0, fmt.Errorf("unexpected pg_dump version: %s", ver)
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, err
+	}
+	return major, nil
+}
+
+func execCmdOutput(ctx context.Context, name string, args []string, env []string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%s %v: %w: %s", name, args, err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
 }

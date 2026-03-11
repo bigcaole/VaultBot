@@ -59,6 +59,8 @@ docker build --build-arg PG_MAJOR=18 -t vaultbot .
 ```
 `docker-compose.yml` 中同样支持 `build.args.PG_MAJOR`。
 
+运行时会自动检测 `pg_dump` 与数据库版本，若 `pg_dump` 版本低于数据库版本，会在备份时提示需要的 `PG_MAJOR`。
+
 ## 生产部署说明
 见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。
 
