@@ -34,7 +34,9 @@ func StartBackupScheduler(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config
 
 	c := cron.New(cron.WithLocation(time.Local))
 	_, err := c.AddFunc("0 22 * * *", func() {
-		runBackup(ctx, bot, cfg, db, receivers, "system")
+		if err := runBackup(ctx, bot, cfg, db, receivers, "system", false); err != nil {
+			log.Printf("scheduled backup failed err=%v", err)
+		}
 	})
 	if err != nil {
 		return nil, err
@@ -48,57 +50,46 @@ func StartBackupScheduler(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config
 }
 
 // RunBackupNow triggers a manual backup.
-func RunBackupNow(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db *gorm.DB, actor string) {
+func RunBackupNow(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db *gorm.DB, actor string) error {
 	receivers := parseReceiverIDs(cfg.BackupReceiverIDs)
 	if len(receivers) == 0 {
-		log.Printf("backup skipped: no BACKUP_RECEIVER_IDS configured")
-		return
+		return fmt.Errorf("BACKUP_RECEIVER_IDS not configured")
 	}
 	if strings.TrimSpace(cfg.BackupPassword) == "" {
-		log.Printf("backup skipped: BACKUP_PASSWORD not configured")
-		return
+		return fmt.Errorf("BACKUP_PASSWORD not configured")
 	}
-	runBackup(ctx, bot, cfg, db, receivers, actor)
+	return runBackup(ctx, bot, cfg, db, receivers, actor, false)
 }
 
-func runBackup(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db *gorm.DB, receivers []int64, actor string) {
-	backupCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
-	ts := time.Now().Format("20060102_150405")
-	tmpDir := os.TempDir()
-	rawFile := filepath.Join(tmpDir, fmt.Sprintf("vaultbot_%s.sql", ts))
-	gzFile := rawFile + ".gz"
-	encFile := gzFile + ".enc"
+// RunBackupTest runs a dry backup test without sending files.
+func RunBackupTest(ctx context.Context, cfg *config.Config) error {
+	if strings.TrimSpace(cfg.DBURL) == "" {
+		return fmt.Errorf("DB_URL is required for backup test")
+	}
+	if strings.TrimSpace(cfg.BackupPassword) == "" {
+		return fmt.Errorf("BACKUP_PASSWORD not configured")
+	}
+	_, cleanup, err := createBackupFile(ctx, cfg, true)
+	if err != nil {
+		return err
+	}
+	cleanup()
+	return nil
+}
 
-	cleanup := func() {
-		_ = os.Remove(rawFile)
-		_ = os.Remove(gzFile)
-		_ = os.Remove(encFile)
+func runBackup(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db *gorm.DB, receivers []int64, actor string, schemaOnly bool) error {
+	encFile, cleanup, err := createBackupFile(ctx, cfg, schemaOnly)
+	if err != nil {
+		return err
 	}
+	defer cleanup()
 
-	if err := execCmd(backupCtx, "pg_dump", []string{"--dbname", cfg.DBURL, "--file", rawFile}, nil); err != nil {
-		log.Printf("backup pg_dump failed err=%v", err)
-		cleanup()
-		return
-	}
-	if err := execCmd(backupCtx, "gzip", []string{"-f", rawFile}, nil); err != nil {
-		log.Printf("backup gzip failed err=%v", err)
-		cleanup()
-		return
-	}
-	env := append(os.Environ(), "BACKUP_PASSWORD="+cfg.BackupPassword)
-	if err := execCmd(backupCtx, "openssl", []string{"enc", "-aes-256-gcm", "-salt", "-pbkdf2", "-iter", "200000", "-pass", "env:BACKUP_PASSWORD", "-in", gzFile, "-out", encFile}, env); err != nil {
-		log.Printf("backup encrypt failed err=%v", err)
-		cleanup()
-		return
-	}
-	_ = os.Remove(gzFile)
-
+	var sendErrs []string
 	for _, id := range receivers {
 		doc := tgbotapi.NewDocument(id, tgbotapi.FilePath(encFile))
-		doc.Caption = fmt.Sprintf("VaultBot 备份 %s", ts)
+		doc.Caption = fmt.Sprintf("VaultBot 备份 %s", time.Now().Format("20060102_150405"))
 		if _, err := bot.Send(doc); err != nil {
-			log.Printf("backup send failed receiver=%d err=%v", id, err)
+			sendErrs = append(sendErrs, fmt.Sprintf("receiver=%d err=%v", id, err))
 		}
 	}
 	if db != nil {
@@ -111,7 +102,46 @@ func runBackup(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db
 			log.Printf("backup audit failed err=%v", err)
 		}
 	}
-	cleanup()
+	if len(sendErrs) > 0 {
+		return fmt.Errorf("backup send failed: %s", strings.Join(sendErrs, "; "))
+	}
+	return nil
+}
+
+func createBackupFile(ctx context.Context, cfg *config.Config, schemaOnly bool) (string, func(), error) {
+	backupCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	ts := time.Now().Format("20060102_150405")
+	tmpDir := os.TempDir()
+	rawFile := filepath.Join(tmpDir, fmt.Sprintf("vaultbot_%s.sql", ts))
+	gzFile := rawFile + ".gz"
+	encFile := gzFile + ".enc"
+
+	cleanup := func() {
+		cancel()
+		_ = os.Remove(rawFile)
+		_ = os.Remove(gzFile)
+		_ = os.Remove(encFile)
+	}
+
+	args := []string{"--dbname", cfg.DBURL, "--file", rawFile}
+	if schemaOnly {
+		args = append(args, "--schema-only")
+	}
+	if err := execCmd(backupCtx, "pg_dump", args, nil); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	if err := execCmd(backupCtx, "gzip", []string{"-f", rawFile}, nil); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	env := append(os.Environ(), "BACKUP_PASSWORD="+cfg.BackupPassword)
+	if err := execCmd(backupCtx, "openssl", []string{"enc", "-aes-256-gcm", "-salt", "-pbkdf2", "-iter", "200000", "-pass", "env:BACKUP_PASSWORD", "-in", gzFile, "-out", encFile}, env); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	_ = os.Remove(gzFile)
+	return encFile, cleanup, nil
 }
 
 func execCmd(ctx context.Context, name string, args []string, env []string) error {

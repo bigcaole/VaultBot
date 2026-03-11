@@ -29,6 +29,8 @@ type TelegramBot struct {
 	ctx        context.Context
 	menuMu     sync.Mutex
 	menuMsg    map[string]int
+	cmdMu      sync.Mutex
+	cmdScope   map[int64]string
 }
 
 const (
@@ -73,6 +75,7 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 		derivedKey: derivedKey,
 		ctx:        ctx,
 		menuMsg:    make(map[string]int),
+		cmdScope:   make(map[int64]string),
 	}
 	if _, err := StartBackupScheduler(ctx, bot, cfg, db); err != nil {
 		return nil, err
@@ -115,12 +118,33 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 		}
 		return
 	}
+	if isBackupReceiver && !isOperator {
+		b.ensureChatCommands(msg.Chat.ID, "backup")
+		if msg.IsCommand() {
+			switch msg.Command() {
+			case "menu", "start":
+				b.sendBackupMenu(msg.Chat.ID, userID, 0)
+			case "help":
+				b.sendBackupHelp(msg.Chat.ID, userID, 0)
+			case "ping":
+				b.reply(msg.Chat.ID, "连接正常。")
+			case "backup":
+				b.runManualBackup(msg.Chat.ID, userID, false)
+			case "backup_test":
+				b.runBackupTest(msg.Chat.ID, userID)
+			default:
+				b.sendBackupHelp(msg.Chat.ID, userID, 0)
+			}
+		}
+		return
+	}
 	if !isOperator {
 		if !isBackupReceiver {
 			b.audit(userID, "unauthorized", "")
 		}
 		return
 	}
+	b.ensureChatCommands(msg.Chat.ID, "operator")
 	if msg.MessageID != 0 {
 		b.deleteMessageLaterForUser(msg.Chat.ID, msg.MessageID, userID)
 	}
@@ -165,6 +189,8 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 			b.sendSearchFieldMenu(msg.Chat.ID, userID, 0)
 		case "ttl":
 			b.sendTTLMenu(msg.Chat.ID, userID, 0)
+		case "backup":
+			b.runManualBackup(msg.Chat.ID, userID, true)
 		case "list":
 			if !b.requireUnlockedForQuery(msg.Chat.ID, userID, 0) {
 				return
@@ -492,6 +518,21 @@ func (b *TelegramBot) sendMainMenu(chatID int64, userID string, messageID int) {
 	b.updateMenu(chatID, userID, messageID, text, keyboard)
 }
 
+func (b *TelegramBot) sendBackupMenu(chatID int64, userID string, messageID int) {
+	text := "备份接收人菜单："
+	b.updateMenuNoDelete(chatID, userID, messageID, text, backupMenuKeyboard())
+}
+
+func backupMenuKeyboard() tgbotapi.InlineKeyboardMarkup {
+	buttons := []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("连接测试", "backup:ping"),
+		tgbotapi.NewInlineKeyboardButtonData("手动备份", "backup:run"),
+		tgbotapi.NewInlineKeyboardButtonData("备份测试", "backup:test"),
+		tgbotapi.NewInlineKeyboardButtonData("帮助", "backup:help"),
+	}
+	return buildInlineKeyboard(buttons, 2)
+}
+
 func (b *TelegramBot) sendCategoryMenu(chatID int64, userID string, messageID int) {
 	var categories []string
 	if err := b.db.Model(&model.Account{}).Distinct("category").Order("category").Pluck("category", &categories).Error; err != nil {
@@ -682,10 +723,10 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 	}
 	chatID := q.Message.Chat.ID
 	userID := fmt.Sprintf("%d", q.From.ID)
-	if !IsAllowed(b.cfg.AllowedUserIDs, userID) {
-		if !IsAllowed(b.cfg.BackupReceiverIDs, userID) {
-			b.audit(userID, "unauthorized", "")
-		}
+	isOperator := IsAllowed(b.cfg.AllowedUserIDs, userID)
+	isBackupReceiver := IsAllowed(b.cfg.BackupReceiverIDs, userID)
+	if !isOperator && !isBackupReceiver {
+		b.audit(userID, "unauthorized", "")
 		return
 	}
 	if q.Message.Chat != nil && q.Message.Chat.Type != "private" && !b.cfg.AllowGroupChat {
@@ -693,6 +734,22 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		return
 	}
 	data := q.Data
+	if isBackupReceiver && !isOperator {
+		switch data {
+		case "backup:ping":
+			b.updateMenuNoDelete(chatID, userID, q.Message.MessageID, "连接正常。", backupMenuKeyboard())
+		case "backup:run":
+			b.updateMenuNoDelete(chatID, userID, q.Message.MessageID, "已开始备份，完成后将发送到接收人。", backupMenuKeyboard())
+			go b.runManualBackup(chatID, userID, false)
+		case "backup:test":
+			b.updateMenuNoDelete(chatID, userID, q.Message.MessageID, "开始备份测试...", backupMenuKeyboard())
+			go b.runBackupTest(chatID, userID)
+		case "backup:help":
+			b.sendBackupHelp(chatID, userID, q.Message.MessageID)
+		}
+		_ = b.answerCallback(q, "")
+		return
+	}
 	switch {
 	case data == "menu:find":
 		if !b.requireUnlockedForQuery(chatID, userID, q.Message.MessageID) {
@@ -712,7 +769,7 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 			break
 		}
 		b.updateMenu(chatID, userID, q.Message.MessageID, "已开始备份，完成后会发送到备份接收人。", backMainKeyboard())
-		go RunBackupNow(b.ctx, b.bot, b.cfg, b.db, userID)
+		go b.runManualBackup(chatID, userID, true)
 	case data == "menu:help":
 		b.sendHelpMenu(chatID, userID, q.Message.MessageID)
 	case data == "menu:add":
@@ -978,6 +1035,44 @@ func (b *TelegramBot) sendEditFieldMenu(chatID int64, userID string, messageID i
 	b.updateMenu(chatID, userID, messageID, "请选择需要修改的字段：", keyboard)
 }
 
+func (b *TelegramBot) runManualBackup(chatID int64, userID string, autoDelete bool) {
+	if strings.TrimSpace(b.cfg.BackupPassword) == "" || len(b.cfg.BackupReceiverIDs) == 0 {
+		b.sendBackupReceipt(chatID, userID, "备份未配置，请设置 BACKUP_PASSWORD 与 BACKUP_RECEIVER_IDS。", autoDelete)
+		return
+	}
+	err := RunBackupNow(b.ctx, b.bot, b.cfg, b.db, userID)
+	if err != nil {
+		b.sendBackupReceipt(chatID, userID, "备份失败："+err.Error(), autoDelete)
+		return
+	}
+	b.sendBackupReceipt(chatID, userID, "备份成功，已发送到备份接收人。", autoDelete)
+}
+
+func (b *TelegramBot) runBackupTest(chatID int64, userID string) {
+	if strings.TrimSpace(b.cfg.BackupPassword) == "" || len(b.cfg.BackupReceiverIDs) == 0 {
+		b.sendBackupReceipt(chatID, userID, "备份未配置，请设置 BACKUP_PASSWORD 与 BACKUP_RECEIVER_IDS。", false)
+		return
+	}
+	err := RunBackupTest(b.ctx, b.cfg)
+	if err != nil {
+		b.sendBackupReceipt(chatID, userID, "备份测试失败："+err.Error(), false)
+		return
+	}
+	b.sendBackupReceipt(chatID, userID, "备份测试成功。", false)
+}
+
+func (b *TelegramBot) sendBackupReceipt(chatID int64, userID string, text string, autoDelete bool) {
+	msg := tgbotapi.NewMessage(chatID, text)
+	sent, err := b.bot.Send(msg)
+	if err != nil {
+		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
+		return
+	}
+	if autoDelete {
+		b.deleteMessageLaterForUser(chatID, sent.MessageID, userID)
+	}
+}
+
 func (b *TelegramBot) sendDeleteConfirm(chatID int64, userID string, messageID int, id string) {
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -1039,6 +1134,17 @@ func (b *TelegramBot) sendHelpMenu(chatID int64, userID string, messageID int) {
 	b.updateMenu(chatID, userID, messageID, help, backMainKeyboard())
 }
 
+func (b *TelegramBot) sendBackupHelp(chatID int64, userID string, messageID int) {
+	help := "备份接收人指令：\n" +
+		"/menu - 打开备份菜单\n" +
+		"/start - 显示备份菜单\n" +
+		"/ping - 连接测试\n" +
+		"/backup - 手动触发备份\n" +
+		"/backup_test - 备份流程测试\n" +
+		"/help - 帮助说明"
+	b.updateMenuNoDelete(chatID, userID, messageID, help, backupMenuKeyboard())
+}
+
 func (b *TelegramBot) updateMenu(chatID int64, userID string, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
 	if messageID > 0 {
 		if b.editMenuMessage(chatID, messageID, text, keyboard) == nil {
@@ -1064,6 +1170,28 @@ func (b *TelegramBot) updateMenu(chatID int64, userID string, messageID int, tex
 	b.deleteMessageLaterForUser(chatID, sent.MessageID, userID)
 }
 
+func (b *TelegramBot) updateMenuNoDelete(chatID int64, userID string, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {
+	if messageID > 0 {
+		if b.editMenuMessage(chatID, messageID, text, keyboard) == nil {
+			b.setMenuMsgID(userID, messageID)
+			return
+		}
+	}
+	if stored := b.getMenuMsgID(userID); stored > 0 {
+		if b.editMenuMessage(chatID, stored, text, keyboard) == nil {
+			return
+		}
+	}
+	msg := tgbotapi.NewMessage(chatID, text)
+	msg.ReplyMarkup = keyboard
+	sent, err := b.bot.Send(msg)
+	if err != nil {
+		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
+		return
+	}
+	b.setMenuMsgID(userID, sent.MessageID)
+}
+
 func (b *TelegramBot) deleteMenuAfter(chatID int64, userID string, messageID int, delay time.Duration) {
 	if delay <= 0 {
 		return
@@ -1082,6 +1210,38 @@ func (b *TelegramBot) editMenuMessage(chatID int64, messageID int, text string, 
 	edit.ReplyMarkup = &keyboard
 	_, err := b.bot.Request(edit)
 	return err
+}
+
+func (b *TelegramBot) ensureChatCommands(chatID int64, role string) {
+	b.cmdMu.Lock()
+	current := b.cmdScope[chatID]
+	if current == role {
+		b.cmdMu.Unlock()
+		return
+	}
+	b.cmdScope[chatID] = role
+	b.cmdMu.Unlock()
+
+	switch role {
+	case "backup":
+		commands := []tgbotapi.BotCommand{
+			{Command: "menu", Description: "打开备份菜单"},
+			{Command: "start", Description: "显示备份菜单"},
+			{Command: "ping", Description: "连接测试"},
+			{Command: "backup", Description: "手动触发备份"},
+			{Command: "backup_test", Description: "备份流程测试"},
+			{Command: "help", Description: "帮助说明"},
+		}
+		scope := tgbotapi.NewBotCommandScopeChat(chatID)
+		if _, err := b.bot.Request(tgbotapi.NewSetMyCommandsWithScope(scope, commands...)); err != nil {
+			log.Printf("telegram set backup commands failed: %v", err)
+		}
+	default:
+		scope := tgbotapi.NewBotCommandScopeChat(chatID)
+		if _, err := b.bot.Request(tgbotapi.NewDeleteMyCommandsWithScope(scope)); err != nil {
+			log.Printf("telegram delete chat commands failed: %v", err)
+		}
+	}
 }
 
 func (b *TelegramBot) getMenuMsgID(userID string) int {

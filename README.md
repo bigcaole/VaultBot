@@ -68,9 +68,18 @@ docker compose up --build
 - `/search`：按字段搜索
 - `/list`：按分类查看所有记录（不包含密码）
 - `/ttl`：设置自动删除时间（3/5/10 分钟）
+- `/backup`：手动触发备份（发送到备份接收人）
 - `/cancel`：取消当前引导流程
 
 主菜单包含“手动备份”按钮，用于立即触发备份并发送到 `BACKUP_RECEIVER_IDS`。
+
+## 备份接收人指令
+- `/menu`：打开备份菜单
+- `/start`：显示备份菜单
+- `/ping`：连接测试
+- `/backup`：手动触发备份
+- `/backup_test`：备份流程测试（不发送文件）
+- `/help`：帮助说明
 
 ## REST API
 所有接口需携带 `X-API-Key` 请求头。
