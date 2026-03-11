@@ -71,6 +71,7 @@ docker build --build-arg PG_MAJOR=18 -t vaultbot .
 ## 备份
 内置定时任务每天 22:00 生成加密备份，并发送到 `BACKUP_RECEIVER_IDS`。主菜单支持手动触发备份，`/backup_test` 可验证备份流程。
 如遇到 `pg_dump` 版本不匹配错误，请将运行镜像的 `PG_MAJOR` 调整为数据库主版本（例如 18/19）。
+恢复流程由备份接收人执行：使用 `/unlock` 解锁后输入 `/restore`，上传 `.enc` 备份文件即可自动解密并导入数据库。
 
 ## Telegram 指令
 - `/menu`：打开主菜单
@@ -92,9 +93,11 @@ docker build --build-arg PG_MAJOR=18 -t vaultbot .
 ## 备份接收人指令
 - `/menu`：打开备份菜单
 - `/start`：显示备份菜单
+- `/unlock <PIN>`：解锁恢复操作
 - `/ping`：连接测试
 - `/backup`：手动触发备份
 - `/backup_test`：备份流程测试（不发送文件）
+- `/restore`：上传备份文件并恢复（需先解锁）
 - `/help`：帮助说明
 
 ## REST API

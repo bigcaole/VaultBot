@@ -1,6 +1,7 @@
 package bot
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -25,6 +26,8 @@ import (
 	"golang.org/x/crypto/argon2"
 	"gorm.io/gorm"
 )
+
+const backupMagic = "VBK2"
 
 // StartBackupScheduler starts a daily backup job at 22:00 local time.
 func StartBackupScheduler(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db *gorm.DB) (*cron.Cron, error) {
@@ -92,6 +95,34 @@ func RunBackupTest(ctx context.Context, cfg *config.Config) error {
 		return err
 	}
 	cleanup()
+	return nil
+}
+
+// RestoreBackup restores an encrypted backup file into the database.
+func RestoreBackup(ctx context.Context, cfg *config.Config, encPath string) error {
+	if strings.TrimSpace(cfg.DBURL) == "" {
+		return fmt.Errorf("DB_URL is required for restore")
+	}
+	if strings.TrimSpace(cfg.BackupPassword) == "" {
+		return fmt.Errorf("BACKUP_PASSWORD not configured")
+	}
+	if warn := WarnIfPgDumpMismatch(ctx, cfg.DBURL); warn != "" {
+		return fmt.Errorf("%s", warn)
+	}
+	backupCtx, cancel := context.WithTimeout(ctx, 20*time.Minute)
+	defer cancel()
+
+	tmpDir := os.TempDir()
+	sqlPath := filepath.Join(tmpDir, fmt.Sprintf("vaultbot_restore_%d.sql", time.Now().UnixNano()))
+	if err := decryptBackupToSQL(encPath, sqlPath, cfg.BackupPassword); err != nil {
+		_ = os.Remove(sqlPath)
+		return err
+	}
+	defer func() { _ = os.Remove(sqlPath) }()
+
+	if err := execCmd(backupCtx, "psql", []string{"-d", cfg.DBURL, "-f", sqlPath}, nil); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -294,7 +325,7 @@ func encryptFileWithPassword(inPath string, outPath string, password string) err
 	stream := cipher.NewCTR(block, iv)
 	h := hmac.New(sha256.New, macKey)
 
-	if _, err := out.Write([]byte("VBK2")); err != nil {
+	if _, err := out.Write([]byte(backupMagic)); err != nil {
 		zeroize(keyMaterial)
 		return err
 	}
@@ -306,7 +337,7 @@ func encryptFileWithPassword(inPath string, outPath string, password string) err
 		zeroize(keyMaterial)
 		return err
 	}
-	if _, err := h.Write([]byte("VBK2")); err != nil {
+	if _, err := h.Write([]byte(backupMagic)); err != nil {
 		zeroize(keyMaterial)
 		return err
 	}
@@ -357,4 +388,136 @@ func zeroize(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
+}
+
+func decryptBackupToSQL(encPath string, sqlPath string, password string) error {
+	if strings.TrimSpace(password) == "" {
+		return fmt.Errorf("BACKUP_PASSWORD not configured")
+	}
+	gzPath := sqlPath + ".gz"
+	if err := decryptFileWithPassword(encPath, gzPath, password); err != nil {
+		return err
+	}
+	defer func() { _ = os.Remove(gzPath) }()
+
+	gzFile, err := os.Open(gzPath)
+	if err != nil {
+		return err
+	}
+	defer gzFile.Close()
+
+	gzr, err := gzip.NewReader(gzFile)
+	if err != nil {
+		return err
+	}
+	defer gzr.Close()
+
+	out, err := os.Create(sqlPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	if _, err := io.Copy(out, gzr); err != nil {
+		return err
+	}
+	return nil
+}
+
+func decryptFileWithPassword(inPath string, outPath string, password string) error {
+	in, err := os.Open(inPath)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	info, err := in.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() < 4+16+16+32 {
+		return fmt.Errorf("invalid backup file")
+	}
+
+	header := make([]byte, 4)
+	if _, err := io.ReadFull(in, header); err != nil {
+		return err
+	}
+	if string(header) != backupMagic {
+		return fmt.Errorf("invalid backup header")
+	}
+	salt := make([]byte, 16)
+	if _, err := io.ReadFull(in, salt); err != nil {
+		return err
+	}
+	iv := make([]byte, 16)
+	if _, err := io.ReadFull(in, iv); err != nil {
+		return err
+	}
+
+	passBytes := []byte(password)
+	keyMaterial := argon2.IDKey(passBytes, salt, 3, 64*1024, 4, 64)
+	zeroize(passBytes)
+	encKey := keyMaterial[:32]
+	macKey := keyMaterial[32:]
+	defer zeroize(keyMaterial)
+
+	block, err := aes.NewCipher(encKey)
+	if err != nil {
+		return err
+	}
+	stream := cipher.NewCTR(block, iv)
+	h := hmac.New(sha256.New, macKey)
+
+	if _, err := h.Write([]byte(backupMagic)); err != nil {
+		return err
+	}
+	if _, err := h.Write(salt); err != nil {
+		return err
+	}
+	if _, err := h.Write(iv); err != nil {
+		return err
+	}
+
+	out, err := os.Create(outPath)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	cipherLen := info.Size() - (4 + 16 + 16 + 32)
+	if cipherLen < 0 {
+		return fmt.Errorf("invalid backup file size")
+	}
+	lr := io.LimitReader(in, cipherLen)
+	buf := make([]byte, 32*1024)
+	for {
+		n, readErr := lr.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			if _, err := h.Write(chunk); err != nil {
+				return err
+			}
+			dec := make([]byte, n)
+			stream.XORKeyStream(dec, chunk)
+			if _, err := out.Write(dec); err != nil {
+				return err
+			}
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return readErr
+		}
+	}
+
+	tag := make([]byte, 32)
+	if _, err := io.ReadFull(in, tag); err != nil {
+		return err
+	}
+	if !hmac.Equal(tag, h.Sum(nil)) {
+		return fmt.Errorf("backup integrity check failed")
+	}
+	return nil
 }

@@ -4,7 +4,11 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,15 +135,22 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 				b.sendBackupMenu(msg.Chat.ID, userID, 0)
 			case "help":
 				b.sendBackupHelp(msg.Chat.ID, userID, 0)
+			case "unlock":
+				b.handleUnlock(msg.Chat.ID, userID, msg.CommandArguments())
 			case "ping":
 				b.reply(msg.Chat.ID, "连接正常。")
 			case "backup":
 				b.runManualBackup(msg.Chat.ID, userID, false)
 			case "backup_test":
 				b.runBackupTest(msg.Chat.ID, userID)
+			case "restore":
+				b.startRestoreFlow(msg.Chat.ID, userID)
 			default:
 				b.sendBackupHelp(msg.Chat.ID, userID, 0)
 			}
+		}
+		if msg.Document != nil {
+			b.handleRestoreDocument(msg.Chat.ID, userID, msg.Document)
 		}
 		return
 	}
@@ -297,6 +308,30 @@ func isSixDigitPIN(pin string) bool {
 		}
 	}
 	return true
+}
+
+func downloadToFile(ctx context.Context, url string, path string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download failed: %s", resp.Status)
+	}
+	out, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, resp.Body); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (b *TelegramBot) startAddFlow(chatID int64, userID string) {
@@ -560,6 +595,7 @@ func backupMenuKeyboard() tgbotapi.InlineKeyboardMarkup {
 		tgbotapi.NewInlineKeyboardButtonData("连接测试", "backup:ping"),
 		tgbotapi.NewInlineKeyboardButtonData("手动备份", "backup:run"),
 		tgbotapi.NewInlineKeyboardButtonData("备份测试", "backup:test"),
+		tgbotapi.NewInlineKeyboardButtonData("恢复数据", "backup:restore"),
 		tgbotapi.NewInlineKeyboardButtonData("帮助", "backup:help"),
 	}
 	return buildInlineKeyboard(buttons, 2)
@@ -776,6 +812,8 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		case "backup:test":
 			b.updateMenuNoDelete(chatID, userID, q.Message.MessageID, "开始备份测试...", backupMenuKeyboard())
 			go b.runBackupTest(chatID, userID)
+		case "backup:restore":
+			b.startRestoreFlow(chatID, userID)
 		case "backup:help":
 			b.sendBackupHelp(chatID, userID, q.Message.MessageID)
 		}
@@ -1132,6 +1170,72 @@ func (b *TelegramBot) sendBackupReceipt(chatID int64, userID string, text string
 	}
 }
 
+func (b *TelegramBot) startRestoreFlow(chatID int64, userID string) {
+	if !b.requireUnlocked(chatID, userID) {
+		return
+	}
+	if b.store == nil {
+		b.sendBackupReceipt(chatID, userID, "会话存储不可用，请检查 Redis 配置。", false)
+		return
+	}
+	if strings.TrimSpace(b.cfg.BackupPassword) == "" {
+		b.sendBackupReceipt(chatID, userID, "未配置 BACKUP_PASSWORD。", false)
+		return
+	}
+	if err := b.store.Set(context.Background(), stateKey("tg:restore", userID), "1", 10*time.Minute); err != nil {
+		b.sendBackupReceipt(chatID, userID, "系统繁忙，请稍后重试。", false)
+		return
+	}
+	b.sendBackupReceipt(chatID, userID, "请在 10 分钟内上传备份文件（.enc）。", false)
+}
+
+func (b *TelegramBot) handleRestoreDocument(chatID int64, userID string, doc *tgbotapi.Document) {
+	if b.store == nil {
+		return
+	}
+	val, err := b.store.Get(context.Background(), stateKey("tg:restore", userID))
+	if err != nil || val == "" {
+		return
+	}
+	_ = b.store.Del(context.Background(), stateKey("tg:restore", userID))
+
+	if !b.requireUnlocked(chatID, userID) {
+		return
+	}
+	if doc == nil {
+		b.sendBackupReceipt(chatID, userID, "未收到备份文件。", false)
+		return
+	}
+	if strings.TrimSpace(b.cfg.BackupPassword) == "" {
+		b.sendBackupReceipt(chatID, userID, "未配置 BACKUP_PASSWORD。", false)
+		return
+	}
+	b.sendBackupReceipt(chatID, userID, "开始恢复，请稍候。", false)
+
+	restoreCtx, cancel := context.WithTimeout(b.ctx, 30*time.Minute)
+	defer cancel()
+
+	fileURL, err := b.bot.GetFileDirectURL(doc.FileID)
+	if err != nil {
+		b.sendBackupReceipt(chatID, userID, "下载文件失败："+err.Error(), false)
+		return
+	}
+	tmpDir := os.TempDir()
+	localPath := filepath.Join(tmpDir, fmt.Sprintf("vaultbot_restore_%d.enc", time.Now().UnixNano()))
+	if err := downloadToFile(restoreCtx, fileURL, localPath); err != nil {
+		b.sendBackupReceipt(chatID, userID, "下载文件失败："+err.Error(), false)
+		return
+	}
+	defer os.Remove(localPath)
+
+	if err := RestoreBackup(restoreCtx, b.cfg, localPath); err != nil {
+		b.sendBackupReceipt(chatID, userID, "恢复失败："+err.Error(), false)
+		return
+	}
+	migrateResult := b.runKeyMigration(userID)
+	b.sendBackupReceipt(chatID, userID, "恢复成功。"+migrateResult, false)
+}
+
 func (b *TelegramBot) startKeyMigration(chatID int64, userID string) {
 	b.migrateMu.Lock()
 	if b.migrating {
@@ -1266,9 +1370,11 @@ func (b *TelegramBot) sendBackupHelp(chatID int64, userID string, messageID int)
 	help := "备份接收人指令：\n" +
 		"/menu - 打开备份菜单\n" +
 		"/start - 显示备份菜单\n" +
+		"/unlock <PIN> - 解锁恢复操作\n" +
 		"/ping - 连接测试\n" +
 		"/backup - 手动触发备份\n" +
 		"/backup_test - 备份流程测试\n" +
+		"/restore - 进入恢复流程（上传备份文件）\n" +
 		"/help - 帮助说明"
 	b.updateMenuNoDelete(chatID, userID, messageID, help, backupMenuKeyboard())
 }
@@ -1355,9 +1461,11 @@ func (b *TelegramBot) ensureChatCommands(chatID int64, role string) {
 		commands := []tgbotapi.BotCommand{
 			{Command: "menu", Description: "打开备份菜单"},
 			{Command: "start", Description: "显示备份菜单"},
+			{Command: "unlock", Description: "解锁恢复操作"},
 			{Command: "ping", Description: "连接测试"},
 			{Command: "backup", Description: "手动触发备份"},
 			{Command: "backup_test", Description: "备份流程测试"},
+			{Command: "restore", Description: "恢复备份数据"},
 			{Command: "help", Description: "帮助说明"},
 		}
 		scope := tgbotapi.NewBotCommandScopeChat(chatID)
