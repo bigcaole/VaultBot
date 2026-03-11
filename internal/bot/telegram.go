@@ -32,6 +32,8 @@ type TelegramBot struct {
 	menuMsg    map[string]int
 	cmdMu      sync.Mutex
 	cmdScope   map[int64]string
+	migrateMu  sync.Mutex
+	migrating  bool
 }
 
 const (
@@ -62,6 +64,7 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 		{Command: "search", Description: "按字段搜索"},
 		{Command: "list", Description: "分类浏览"},
 		{Command: "ttl", Description: "设置自动删除"},
+		{Command: "migrate", Description: "密钥迁移"},
 		{Command: "cancel", Description: "取消当前流程"},
 		{Command: "help", Description: "帮助说明"},
 	}
@@ -193,6 +196,8 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 			b.sendTTLMenu(msg.Chat.ID, userID, 0)
 		case "backup":
 			b.runManualBackup(msg.Chat.ID, userID, true)
+		case "migrate":
+			b.startKeyMigration(msg.Chat.ID, userID)
 		case "list":
 			if !b.requireUnlockedForQuery(msg.Chat.ID, userID, 0) {
 				return
@@ -538,6 +543,7 @@ func (b *TelegramBot) sendMainMenu(chatID int64, userID string, messageID int) {
 		tgbotapi.NewInlineKeyboardButtonData("字段搜索", "menu:search"),
 		tgbotapi.NewInlineKeyboardButtonData("自动删除", "menu:ttl"),
 		tgbotapi.NewInlineKeyboardButtonData("手动备份", "menu:backup"),
+		tgbotapi.NewInlineKeyboardButtonData("密钥迁移", "menu:migrate"),
 		tgbotapi.NewInlineKeyboardButtonData("帮助", "menu:help"),
 	}
 	keyboard := buildInlineKeyboard(buttons, 2)
@@ -796,10 +802,21 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		}
 		b.updateMenu(chatID, userID, q.Message.MessageID, "已开始备份，完成后会发送到备份接收人。", backMainKeyboard())
 		go b.runManualBackup(chatID, userID, true)
+	case data == "menu:migrate":
+		keyboard := tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("确认迁移", "migrate:confirm"),
+				tgbotapi.NewInlineKeyboardButtonData("取消", "back:main"),
+			),
+		)
+		b.updateMenu(chatID, userID, q.Message.MessageID, "确认执行密钥迁移？将使用旧密钥解密并重加密所有记录。", keyboard)
 	case data == "menu:help":
 		b.sendHelpMenu(chatID, userID, q.Message.MessageID)
 	case data == "menu:add":
 		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入 /add 开始新增账号。", backMainKeyboard())
+	case data == "migrate:confirm":
+		b.updateMenu(chatID, userID, q.Message.MessageID, "已开始密钥迁移，请稍候。", backMainKeyboard())
+		go b.startKeyMigration(chatID, userID)
 	case strings.HasPrefix(data, "ttl:"):
 		if b.store != nil {
 			seconds, err := strconv.Atoi(strings.TrimPrefix(data, "ttl:"))
@@ -1115,6 +1132,70 @@ func (b *TelegramBot) sendBackupReceipt(chatID int64, userID string, text string
 	}
 }
 
+func (b *TelegramBot) startKeyMigration(chatID int64, userID string) {
+	b.migrateMu.Lock()
+	if b.migrating {
+		b.migrateMu.Unlock()
+		b.sendBackupReceipt(chatID, userID, "密钥迁移正在进行中，请稍后查看结果。", true)
+		return
+	}
+	b.migrating = true
+	b.migrateMu.Unlock()
+
+	go func() {
+		defer func() {
+			b.migrateMu.Lock()
+			b.migrating = false
+			b.migrateMu.Unlock()
+		}()
+		result := b.runKeyMigration(userID)
+		b.sendBackupReceipt(chatID, userID, result, true)
+	}()
+}
+
+func (b *TelegramBot) runKeyMigration(actor string) string {
+	if len(b.legacyKey) == 0 {
+		return "未配置旧密钥，无法迁移。请设置 LEGACY_MASTER_KEY 与 LEGACY_SECRET_PEPPER。"
+	}
+	const batchSize = 200
+	var total, migrated, skipped, failed int
+	var accounts []model.Account
+	err := b.db.Model(&model.Account{}).Order("id").FindInBatches(&accounts, batchSize, func(tx *gorm.DB, batch int) error {
+		for i := range accounts {
+			acc := accounts[i]
+			total++
+			if _, err := crypto.Decrypt(acc.EncryptedPassword, acc.Nonce, b.derivedKey); err == nil {
+				skipped++
+				continue
+			}
+			pwd, err := crypto.Decrypt(acc.EncryptedPassword, acc.Nonce, b.legacyKey)
+			if err != nil {
+				failed++
+				continue
+			}
+			ciphertext, nonce, err := crypto.Encrypt(pwd, b.derivedKey)
+			if err != nil {
+				failed++
+				continue
+			}
+			if err := tx.Model(&acc).Updates(map[string]any{
+				"encrypted_password": ciphertext,
+				"nonce":              nonce,
+			}).Error; err != nil {
+				failed++
+				continue
+			}
+			migrated++
+		}
+		return nil
+	}).Error
+	if err != nil {
+		return fmt.Sprintf("密钥迁移失败：%v", err)
+	}
+	b.audit(actor, "migrate", fmt.Sprintf("total=%d migrated=%d skipped=%d failed=%d", total, migrated, skipped, failed))
+	return fmt.Sprintf("密钥迁移完成：总数 %d，已迁移 %d，已是新密钥 %d，失败 %d。", total, migrated, skipped, failed)
+}
+
 func (b *TelegramBot) sendDeleteConfirm(chatID int64, userID string, messageID int, id string) {
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
@@ -1174,6 +1255,7 @@ func (b *TelegramBot) sendHelpMenu(chatID int64, userID string, messageID int) {
 		"/search - 按字段搜索\n" +
 		"/list - 按分类浏览\n" +
 		"/ttl - 设置自动删除时间\n" +
+		"/migrate - 迁移旧密钥数据\n" +
 		"手动备份 - 在主菜单点击\n" +
 		"/cancel - 取消当前引导流程\n" +
 		"/help - 显示帮助"

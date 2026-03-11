@@ -82,9 +82,11 @@ docker build --build-arg PG_MAJOR=18 -t vaultbot .
 - `/list`：按分类查看所有记录（不包含密码）
 - `/ttl`：设置自动删除时间（3/5/10 分钟）
 - `/backup`：手动触发备份（发送到备份接收人）
+- `/migrate`：执行旧密钥迁移
 - `/cancel`：取消当前引导流程
 
 主菜单包含“手动备份”按钮，用于立即触发备份并发送到 `BACKUP_RECEIVER_IDS`。
+主菜单包含“密钥迁移”按钮，用于一键迁移旧密钥数据（需配置 `LEGACY_*`）。
 
 ## 备份接收人指令
 - `/menu`：打开备份菜单
