@@ -140,6 +140,11 @@ func DecryptWithFallback(ciphertextB64 string, nonceB64 string, masterKey []byte
 	return plaintext, true, nil
 }
 
+// LoadRawKey 解析原始 MASTER_KEY（32 字节或 base64 形式），用于旧版本兼容解密。
+func LoadRawKey(raw string) ([]byte, error) {
+	return decodeMasterKey(raw)
+}
+
 func decodeMasterKey(raw string) ([]byte, error) {
 	if len(raw) == 32 {
 		return []byte(raw), nil

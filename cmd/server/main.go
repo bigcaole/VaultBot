@@ -30,9 +30,17 @@ func main() {
 	}
 	var legacyKey []byte
 	if cfg.LegacyMasterKey != "" || cfg.LegacyPepper != "" {
-		legacyKey, err = crypto.DeriveKey(cfg.LegacyMasterKey, cfg.LegacyPepper)
+		if cfg.LegacyMasterKey != "" && cfg.LegacyPepper == "" {
+			legacyKey, err = crypto.LoadRawKey(cfg.LegacyMasterKey)
+		} else {
+			legacyKey, err = crypto.DeriveKey(cfg.LegacyMasterKey, cfg.LegacyPepper)
+		}
 		if err != nil {
 			log.Fatal(err)
+		}
+	} else {
+		if rawKey, err := crypto.LoadRawKey(cfg.MasterKey); err == nil {
+			legacyKey = rawKey
 		}
 	}
 

@@ -87,6 +87,7 @@ docker build --build-arg PG_MAJOR=18 -t vaultbot .
 
 主菜单包含“手动备份”按钮，用于立即触发备份并发送到 `BACKUP_RECEIVER_IDS`。
 主菜单包含“密钥迁移”按钮，用于一键迁移旧密钥数据（需配置 `LEGACY_*`）。
+如果未显式设置 `LEGACY_*`，系统会自动尝试使用当前 `MASTER_KEY` 的原始 32 字节值作为旧密钥进行兼容解密。
 
 ## 备份接收人指令
 - `/menu`：打开备份菜单
