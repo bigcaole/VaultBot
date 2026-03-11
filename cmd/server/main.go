@@ -24,7 +24,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	masterKey, err := crypto.LoadMasterKey(cfg.MasterKey)
+	derivedKey, err := crypto.DeriveKey(cfg.MasterKey, cfg.SecretPepper)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -41,14 +41,44 @@ func main() {
 
 	r := gin.New()
 	r.Use(gin.Recovery())
-	r.GET("/healthz", func(c *gin.Context) { c.JSON(200, gin.H{"ok": true}) })
-	api.RegisterRoutes(r, db, masterKey, cfg.APIKey, redisStore, cfg.PasswordTokenTTL)
+	r.GET("/healthz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
+		defer cancel()
+		status := http.StatusOK
+		resp := gin.H{"ok": true}
+
+		if sqlDB, err := db.DB(); err != nil {
+			status = http.StatusServiceUnavailable
+			resp["postgres"] = "unavailable"
+		} else if err := sqlDB.PingContext(ctx); err != nil {
+			status = http.StatusServiceUnavailable
+			resp["postgres"] = "unavailable"
+		} else {
+			resp["postgres"] = "ok"
+		}
+
+		if redisStore == nil {
+			status = http.StatusServiceUnavailable
+			resp["redis"] = "unavailable"
+		} else if err := redisStore.Client().Ping(ctx).Err(); err != nil {
+			status = http.StatusServiceUnavailable
+			resp["redis"] = "unavailable"
+		} else {
+			resp["redis"] = "ok"
+		}
+
+		if status != http.StatusOK {
+			resp["ok"] = false
+		}
+		c.JSON(status, resp)
+	})
+	api.RegisterRoutes(r, db, derivedKey, cfg.APIKey, redisStore, cfg.PasswordTokenTTL)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	if cfg.TelegramBotToken != "" {
-		if _, err := bot.StartTelegramBot(ctx, cfg, db, redisStore, masterKey); err != nil {
+		if _, err := bot.StartTelegramBot(ctx, cfg, db, redisStore, derivedKey); err != nil {
 			log.Fatal(err)
 		}
 		log.Println("Telegram bot started")

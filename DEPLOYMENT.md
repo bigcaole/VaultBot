@@ -19,12 +19,10 @@ export HTTP_ADDR=127.0.0.1:8080
 export DB_URL="postgres://user:pass@127.0.0.1:5432/vaultbot?sslmode=disable"
 export REDIS_URL="redis://127.0.0.1:6379/0"
 export MASTER_KEY="<32字节或base64>"
+export SECRET_PEPPER="<胡椒粉字符串>"
+export UNLOCK_PIN="<解锁PIN>"
 export API_KEY="<高强度随机串>"
 export TELEGRAM_BOT_TOKEN="<可选>"
-export FEISHU_APP_ID="<可选>"
-export FEISHU_APP_SECRET="<可选>"
-export FEISHU_VERIFICATION_TOKEN="<可选>"
-export FEISHU_ENCRYPT_KEY="<可选>"
 export ALLOWED_USER_IDS="<逗号分隔>"
 
 ./vaultbot

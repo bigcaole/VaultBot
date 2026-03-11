@@ -10,18 +10,23 @@ import (
 
 // Config holds runtime configuration loaded from environment variables.
 type Config struct {
-	DBURL                   string
-	RedisURL                string
-	MasterKey               string
-	TelegramBotToken        string
-	APIKey                  string
-	AllowedUserIDs          map[string]struct{}
-	HTTPAddr                string
-	DeleteAfter             time.Duration
-	DBConnectRetries        int
-	DBConnectDelay          time.Duration
-	AllowGroupChat          bool
-	PasswordTokenTTL        time.Duration
+	DBURL             string
+	RedisURL          string
+	MasterKey         string
+	SecretPepper      string
+	UnlockPIN         string
+	BackupPassword    string
+	TelegramBotToken  string
+	APIKey            string
+	AllowedUserIDs    map[string]struct{}
+	BackupReceiverIDs map[string]struct{}
+	HTTPAddr          string
+	DeleteAfter       time.Duration
+	DBConnectRetries  int
+	DBConnectDelay    time.Duration
+	AllowGroupChat    bool
+	PasswordTokenTTL  time.Duration
+	UnlockTTL         time.Duration
 }
 
 // Load reads configuration from environment variables.
@@ -31,6 +36,9 @@ func Load() (*Config, error) {
 	cfg.DBURL = strings.TrimSpace(os.Getenv("DB_URL"))
 	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
 	cfg.MasterKey = strings.TrimSpace(os.Getenv("MASTER_KEY"))
+	cfg.SecretPepper = strings.TrimSpace(os.Getenv("SECRET_PEPPER"))
+	cfg.UnlockPIN = strings.TrimSpace(os.Getenv("UNLOCK_PIN"))
+	cfg.BackupPassword = strings.TrimSpace(os.Getenv("BACKUP_PASSWORD"))
 	cfg.TelegramBotToken = strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN"))
 	cfg.APIKey = strings.TrimSpace(os.Getenv("API_KEY"))
 	cfg.HTTPAddr = strings.TrimSpace(os.Getenv("HTTP_ADDR"))
@@ -50,6 +58,7 @@ func Load() (*Config, error) {
 	}
 
 	cfg.AllowedUserIDs = parseAllowedIDs(os.Getenv("ALLOWED_USER_IDS"))
+	cfg.BackupReceiverIDs = parseAllowedIDs(os.Getenv("BACKUP_RECEIVER_IDS"))
 
 	cfg.DBConnectRetries = 10
 	if retriesStr := strings.TrimSpace(os.Getenv("DB_CONNECT_RETRIES")); retriesStr != "" {
@@ -70,6 +79,7 @@ func Load() (*Config, error) {
 			cfg.PasswordTokenTTL = time.Duration(seconds) * time.Second
 		}
 	}
+	cfg.UnlockTTL = 15 * time.Minute
 	return cfg, nil
 }
 

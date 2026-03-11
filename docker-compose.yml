@@ -17,6 +17,7 @@ services:
       - db-data:/var/lib/postgresql/data
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -24,6 +25,8 @@ services:
       retries: 10
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
   vaultbot:
     build: .
     depends_on:
@@ -36,11 +39,19 @@ services:
       DB_URL: "postgres://vaultbot:vaultbot@db:5432/vaultbot?sslmode=disable"
       REDIS_URL: "redis://redis:6379/0"
       MASTER_KEY: "REPLACE_WITH_32_BYTES_OR_BASE64"
+      SECRET_PEPPER: "REPLACE_WITH_SECRET_PEPPER"
+      UNLOCK_PIN: "REPLACE_WITH_PIN"
+      BACKUP_PASSWORD: "REPLACE_WITH_BACKUP_PASSWORD"
+      BACKUP_RECEIVER_IDS: ""
       API_KEY: "REPLACE_WITH_API_KEY"
       TELEGRAM_BOT_TOKEN: ""
       ALLOWED_USER_IDS: ""
       PASSWORD_TOKEN_TTL_SECONDS: "60"
     ports:
       - "8080:8080"
+    volumes:
+      - backups:/backups
 volumes:
   db-data:
+  redis-data:
+  backups:

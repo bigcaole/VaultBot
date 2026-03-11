@@ -27,11 +27,15 @@ func Init(dbURL string, retries int, delay time.Duration) (*gorm.DB, error) {
 		if err == nil {
 			sqlDB, err := db.DB()
 			if err == nil {
+				sqlDB.SetMaxIdleConns(10)
+				sqlDB.SetMaxOpenConns(100)
+				sqlDB.SetConnMaxLifetime(time.Hour)
+
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				pingErr := sqlDB.PingContext(ctx)
 				cancel()
 				if pingErr == nil {
-					if err := db.AutoMigrate(&Account{}); err != nil {
+					if err := db.AutoMigrate(&Account{}, &AuditLog{}); err != nil {
 						return nil, err
 					}
 					return db, nil

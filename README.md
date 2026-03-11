@@ -4,6 +4,7 @@
 
 ## 主要特性
 - AES-256-GCM 加密，随机 Nonce，避免相同密码产生相同密文
+- MASTER_KEY + SECRET_PEPPER 通过 Argon2id 派生密钥
 - Telegram 机器人交互
 - Redis 用于限流与会话状态管理
 - REST API（API Key 认证）
@@ -18,6 +19,9 @@
 | `DB_URL` | PostgreSQL 连接串，例如 `postgres://user:pass@localhost:5432/vaultbot?sslmode=disable` | 本地/容器中创建数据库与账号后拼接连接串 |
 | `REDIS_URL` | Redis 连接串，例如 `redis://localhost:6379/0` | 本地/容器中启动 Redis 后拼接连接串 |
 | `MASTER_KEY` | 32 字节主密钥（原始字符串或 base64 编码），绝不落库 | 使用 `openssl rand -base64 32` 生成后保存 |
+| `SECRET_PEPPER` | 额外胡椒粉字符串，用于 KDF 派生 | 使用 `openssl rand -base64 32` 生成后保存 |
+| `UNLOCK_PIN` | 密码查询会话 PIN（/unlock 使用） | 自行生成高强度随机串并安全保存 |
+| `BACKUP_PASSWORD` | 备份加密口令 | 自行生成高强度随机串并安全保存 |
 | `API_KEY` | REST API 的访问密钥 | 自行生成高强度随机串并安全保存 |
 
 可选：
@@ -31,6 +35,7 @@
 | `DB_CONNECT_DELAY_SECONDS` | 数据库连接重试间隔秒数，默认 3 | 按部署稳定性设置 |
 | `ALLOW_GROUP_CHAT` | 是否允许群聊使用机器人，默认 `false` | 需要群聊时设为 `true` |
 | `PASSWORD_TOKEN_TTL_SECONDS` | 明文密码一次性令牌有效期（秒），默认 60 | 按安全策略设置 |
+| `BACKUP_RECEIVER_IDS` | 备份接收人 ID 列表，逗号分隔 | Telegram 数字 ID |
 
 示例生成 MASTER_KEY：
 ```bash
@@ -51,9 +56,13 @@ docker compose up --build
 ## 生产部署说明
 见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。
 
+## 备份
+内置定时任务每天 22:00 生成加密备份，并发送到 `BACKUP_RECEIVER_IDS`。
+
 ## Telegram 指令
 - `/menu`：打开主菜单
 - `/start`：显示功能入口（菜单按钮）
+- `/unlock <PIN>`：解锁密码查询（15 分钟有效）
 - `/add`：引导式输入平台、用户名、密码等信息
 - `/find <platform>`：按平台关键词查询（无参数时进入分类浏览）
 - `/search`：按字段搜索
