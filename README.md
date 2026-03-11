@@ -57,7 +57,7 @@ docker compose up --build
 见 `DEPLOYMENT.md`，包含 OpenResty 反向代理与 HTTPS 配置建议。
 
 ## 备份
-内置定时任务每天 22:00 生成加密备份，并发送到 `BACKUP_RECEIVER_IDS`。
+内置定时任务每天 22:00 生成加密备份，并发送到 `BACKUP_RECEIVER_IDS`。主菜单支持手动触发备份。
 
 ## Telegram 指令
 - `/menu`：打开主菜单
@@ -69,6 +69,8 @@ docker compose up --build
 - `/list`：按分类查看所有记录（不包含密码）
 - `/ttl`：设置自动删除时间（3/5/10 分钟）
 - `/cancel`：取消当前引导流程
+
+主菜单包含“手动备份”按钮，用于立即触发备份并发送到 `BACKUP_RECEIVER_IDS`。
 
 ## REST API
 所有接口需携带 `X-API-Key` 请求头。

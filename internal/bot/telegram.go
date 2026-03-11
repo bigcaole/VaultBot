@@ -50,8 +50,20 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 	if err != nil {
 		return nil, err
 	}
-	if _, err := bot.Request(tgbotapi.NewDeleteMyCommands()); err != nil {
-		log.Printf("telegram delete commands failed: %v", err)
+	commands := []tgbotapi.BotCommand{
+		{Command: "menu", Description: "打开主菜单"},
+		{Command: "start", Description: "显示功能入口"},
+		{Command: "unlock", Description: "解锁密码查询"},
+		{Command: "add", Description: "新增账号"},
+		{Command: "find", Description: "平台关键词查询"},
+		{Command: "search", Description: "按字段搜索"},
+		{Command: "list", Description: "分类浏览"},
+		{Command: "ttl", Description: "设置自动删除"},
+		{Command: "cancel", Description: "取消当前流程"},
+		{Command: "help", Description: "帮助说明"},
+	}
+	if _, err := bot.Request(tgbotapi.NewSetMyCommands(commands...)); err != nil {
+		log.Printf("telegram set commands failed: %v", err)
 	}
 	b := &TelegramBot{
 		bot:        bot,
@@ -473,6 +485,7 @@ func (b *TelegramBot) sendMainMenu(chatID int64, userID string, messageID int) {
 		tgbotapi.NewInlineKeyboardButtonData("分类浏览", "menu:find"),
 		tgbotapi.NewInlineKeyboardButtonData("字段搜索", "menu:search"),
 		tgbotapi.NewInlineKeyboardButtonData("自动删除", "menu:ttl"),
+		tgbotapi.NewInlineKeyboardButtonData("手动备份", "menu:backup"),
 		tgbotapi.NewInlineKeyboardButtonData("帮助", "menu:help"),
 	}
 	keyboard := buildInlineKeyboard(buttons, 2)
@@ -693,6 +706,13 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		b.sendSearchFieldMenu(chatID, userID, q.Message.MessageID)
 	case data == "menu:ttl":
 		b.sendTTLMenu(chatID, userID, q.Message.MessageID)
+	case data == "menu:backup":
+		if strings.TrimSpace(b.cfg.BackupPassword) == "" || len(b.cfg.BackupReceiverIDs) == 0 {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "备份未配置，请设置 BACKUP_PASSWORD 与 BACKUP_RECEIVER_IDS。", backMainKeyboard())
+			break
+		}
+		b.updateMenu(chatID, userID, q.Message.MessageID, "已开始备份，完成后会发送到备份接收人。", backMainKeyboard())
+		go RunBackupNow(b.ctx, b.bot, b.cfg, b.db, userID)
 	case data == "menu:help":
 		b.sendHelpMenu(chatID, userID, q.Message.MessageID)
 	case data == "menu:add":
@@ -1013,6 +1033,7 @@ func (b *TelegramBot) sendHelpMenu(chatID int64, userID string, messageID int) {
 		"/search - 按字段搜索\n" +
 		"/list - 按分类浏览\n" +
 		"/ttl - 设置自动删除时间\n" +
+		"手动备份 - 在主菜单点击\n" +
 		"/cancel - 取消当前引导流程\n" +
 		"/help - 显示帮助"
 	b.updateMenu(chatID, userID, messageID, help, backMainKeyboard())

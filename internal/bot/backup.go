@@ -34,7 +34,7 @@ func StartBackupScheduler(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config
 
 	c := cron.New(cron.WithLocation(time.Local))
 	_, err := c.AddFunc("0 22 * * *", func() {
-		runBackup(ctx, bot, cfg, db, receivers)
+		runBackup(ctx, bot, cfg, db, receivers, "system")
 	})
 	if err != nil {
 		return nil, err
@@ -47,7 +47,21 @@ func StartBackupScheduler(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config
 	return c, nil
 }
 
-func runBackup(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db *gorm.DB, receivers []int64) {
+// RunBackupNow triggers a manual backup.
+func RunBackupNow(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db *gorm.DB, actor string) {
+	receivers := parseReceiverIDs(cfg.BackupReceiverIDs)
+	if len(receivers) == 0 {
+		log.Printf("backup skipped: no BACKUP_RECEIVER_IDS configured")
+		return
+	}
+	if strings.TrimSpace(cfg.BackupPassword) == "" {
+		log.Printf("backup skipped: BACKUP_PASSWORD not configured")
+		return
+	}
+	runBackup(ctx, bot, cfg, db, receivers, actor)
+}
+
+func runBackup(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db *gorm.DB, receivers []int64, actor string) {
 	backupCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 	ts := time.Now().Format("20060102_150405")
@@ -89,7 +103,7 @@ func runBackup(ctx context.Context, bot *tgbotapi.BotAPI, cfg *config.Config, db
 	}
 	if db != nil {
 		entry := &model.AuditLog{
-			UserID:   "system",
+			UserID:   actor,
 			Action:   "backup",
 			Platform: "database",
 		}
