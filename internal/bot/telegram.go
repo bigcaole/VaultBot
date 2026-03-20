@@ -633,6 +633,7 @@ func (b *TelegramBot) sendAccountsMenu(chatID int64, userID string, messageID in
 		data := "acct:" + acc.ID.String()
 		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(label, data))
 	}
+	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("➕添加账号", "acct_add"))
 	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("返回分类", "back:categories"))
 	keyboard := buildInlineKeyboard(buttons, 1)
 	b.updateMenu(chatID, userID, messageID, title, keyboard)
@@ -1003,6 +1004,18 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 			b.audit(userID, "delete", account.Platform)
 			b.updateMenu(chatID, userID, q.Message.MessageID, "已删除。", backMainKeyboard())
 		}
+	case data == "acct_add":
+		if b.store == nil {
+			b.reply(chatID, "会话存储不可用，请检查 Redis 配置。")
+			break
+		}
+		category, _ := b.store.Get(context.Background(), stateKey("tg:lastcat", userID))
+		st := &addState{Step: stepPlatform, Category: category}
+		if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute); err != nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "系统繁忙，请稍后重试。", backMainKeyboard())
+			break
+		}
+		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入平台名称：", backMainKeyboard())
 	case data == "back:categories":
 		if !b.requireUnlockedForQuery(chatID, userID, q.Message.MessageID) {
 			break
