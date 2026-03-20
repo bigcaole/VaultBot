@@ -184,7 +184,7 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 		case "unlock":
 			b.handleUnlock(msg.Chat.ID, userID, msg.CommandArguments())
 		case "add":
-			b.startAddFlow(msg.Chat.ID, userID)
+			b.startAddFlow(msg.Chat.ID, userID, 0, "")
 		case "help":
 			b.sendHelpMenu(msg.Chat.ID, userID, 0)
 		case "find":
@@ -334,17 +334,95 @@ func downloadToFile(ctx context.Context, url string, path string) error {
 	return nil
 }
 
-func (b *TelegramBot) startAddFlow(chatID int64, userID string) {
+func (b *TelegramBot) startAddFlow(chatID int64, userID string, messageID int, presetCategory string) {
 	if b.store == nil {
-		b.reply(chatID, "会话存储不可用，请检查 Redis 配置。")
+		b.updateMenu(chatID, userID, messageID, "会话存储不可用，请检查 Redis 配置。", backMainKeyboard())
 		return
 	}
-	st := &addState{Step: stepPlatform}
+	st := &addState{Step: stepPlatform, Category: presetCategory}
 	if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute); err != nil {
-		b.reply(chatID, "系统繁忙，请稍后重试。")
+		b.updateMenu(chatID, userID, messageID, "系统繁忙，请稍后重试。", backMainKeyboard())
 		return
 	}
-	b.reply(chatID, "请输入平台名称：")
+	b.promptPlatform(chatID, userID, messageID, st)
+}
+
+func (b *TelegramBot) recentPlatforms(limit int) []string {
+	var platforms []string
+	if limit <= 0 {
+		return platforms
+	}
+	err := b.db.Model(&model.Account{}).
+		Select("platform").
+		Where("platform <> ''").
+		Group("platform").
+		Order("MAX(updated_at) DESC").
+		Limit(limit).
+		Pluck("platform", &platforms).Error
+	if err != nil {
+		return nil
+	}
+	return platforms
+}
+
+func (b *TelegramBot) recentCategories(limit int) []string {
+	var categories []string
+	if limit <= 0 {
+		return categories
+	}
+	err := b.db.Model(&model.Account{}).
+		Select("category").
+		Where("category <> ''").
+		Group("category").
+		Order("MAX(updated_at) DESC").
+		Limit(limit).
+		Pluck("category", &categories).Error
+	if err != nil {
+		return nil
+	}
+	return categories
+}
+
+func (b *TelegramBot) promptPlatform(chatID int64, userID string, messageID int, st *addState) {
+	platforms := b.recentPlatforms(8)
+	st.PlatformOptions = platforms
+	if b.store != nil {
+		_ = saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute)
+	}
+	buttons := make([]tgbotapi.InlineKeyboardButton, 0, len(platforms)+1)
+	for i, p := range platforms {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(p, fmt.Sprintf("addplatform:%d", i)))
+	}
+	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("手动输入", "addplatform:manual"))
+	keyboard := buildInlineKeyboard(buttons, 2)
+	b.updateMenu(chatID, userID, messageID, "请选择平台或直接输入：", keyboard)
+}
+
+func (b *TelegramBot) promptCategory(chatID int64, userID string, messageID int, st *addState) {
+	categories := b.recentCategories(8)
+	st.CategoryOptions = categories
+	if b.store != nil {
+		_ = saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute)
+	}
+	if len(categories) == 0 {
+		b.updateMenu(chatID, userID, messageID, "请输入分类（如：工作/生活/金融）：", backMainKeyboard())
+		return
+	}
+	buttons := make([]tgbotapi.InlineKeyboardButton, 0, len(categories)+1)
+	for i, c := range categories {
+		buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData(c, fmt.Sprintf("addcategory:%d", i)))
+	}
+	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("手动输入", "addcategory:manual"))
+	keyboard := buildInlineKeyboard(buttons, 2)
+	b.updateMenu(chatID, userID, messageID, "请选择分类或直接输入：", keyboard)
+}
+
+func (b *TelegramBot) promptOptional(chatID int64, userID string, messageID int, text string, action string) {
+	buttons := []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("跳过", "addskip:"+action),
+	}
+	keyboard := buildInlineKeyboard(buttons, 1)
+	b.updateMenu(chatID, userID, messageID, text, keyboard)
 }
 
 func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
@@ -365,12 +443,20 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 	switch st.Step {
 	case stepPlatform:
 		st.Platform = text
-		st.Step = stepCategory
+		if st.Category != "" {
+			st.Step = stepUsername
+		} else {
+			st.Step = stepCategory
+		}
 		if err := saveState(context.Background(), b.store, key, st, 15*time.Minute); err != nil {
 			b.reply(chatID, "系统繁忙，请稍后重试。")
 			return
 		}
-		b.reply(chatID, "请输入分类（如：工作/生活/金融）：")
+		if st.Step == stepCategory {
+			b.promptCategory(chatID, userID, 0, st)
+		} else {
+			b.updateMenu(chatID, userID, 0, "请输入用户名：", backMainKeyboard())
+		}
 	case stepCategory:
 		st.Category = text
 		st.Step = stepUsername
@@ -378,7 +464,7 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 			b.reply(chatID, "系统繁忙，请稍后重试。")
 			return
 		}
-		b.reply(chatID, "请输入用户名：")
+		b.updateMenu(chatID, userID, 0, "请输入用户名：", backMainKeyboard())
 	case stepUsername:
 		st.Username = text
 		st.Step = stepPassword
@@ -386,7 +472,7 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 			b.reply(chatID, "系统繁忙，请稍后重试。")
 			return
 		}
-		b.reply(chatID, "请输入密码（不会写入日志）：")
+		b.updateMenu(chatID, userID, 0, "请输入密码（不会写入日志）：", backMainKeyboard())
 	case stepPassword:
 		ciphertext, nonce, err := crypto.Encrypt(text, b.derivedKey)
 		if err != nil {
@@ -400,7 +486,7 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 			b.reply(chatID, "系统繁忙，请稍后重试。")
 			return
 		}
-		b.reply(chatID, "请输入邮箱（可输入 - 跳过）：")
+		b.promptOptional(chatID, userID, 0, "请输入邮箱（可跳过）：", "email")
 	case stepEmail:
 		if text == "-" {
 			text = ""
@@ -411,7 +497,7 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 			b.reply(chatID, "系统繁忙，请稍后重试。")
 			return
 		}
-		b.reply(chatID, "请输入手机号（可输入 - 跳过）：")
+		b.promptOptional(chatID, userID, 0, "请输入手机号（可跳过）：", "phone")
 	case stepPhone:
 		if text == "-" {
 			text = ""
@@ -422,7 +508,7 @@ func (b *TelegramBot) handleAddStep(chatID int64, userID string, text string) {
 			b.reply(chatID, "系统繁忙，请稍后重试。")
 			return
 		}
-		b.reply(chatID, "请输入备注（可输入 - 跳过）：")
+		b.promptOptional(chatID, userID, 0, "请输入备注（可跳过）：", "notes")
 	case stepNotes:
 		if text == "-" {
 			text = ""
@@ -852,7 +938,7 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 	case data == "menu:help":
 		b.sendHelpMenu(chatID, userID, q.Message.MessageID)
 	case data == "menu:add":
-		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入 /add 开始新增账号。", backMainKeyboard())
+		b.startAddFlow(chatID, userID, q.Message.MessageID, "")
 	case data == "migrate:confirm":
 		b.updateMenu(chatID, userID, q.Message.MessageID, "已开始密钥迁移，请稍候。", backMainKeyboard())
 		go b.startKeyMigration(chatID, userID)
@@ -870,6 +956,98 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 			_ = saveSearchState(context.Background(), b.store, stateKey("tg:search", userID), &searchState{Field: field}, searchTTL)
 		}
 		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入关键词：", backMainKeyboard())
+	case strings.HasPrefix(data, "addplatform:"):
+		if b.store == nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "会话存储不可用，请检查 Redis 配置。", backMainKeyboard())
+			break
+		}
+		st, err := loadState(context.Background(), b.store, stateKey("tg:add", userID))
+		if err != nil || st == nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "操作已过期，请重新开始。", backMainKeyboard())
+			break
+		}
+		choice := strings.TrimPrefix(data, "addplatform:")
+		if choice == "manual" {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "请输入平台名称：", backMainKeyboard())
+			break
+		}
+		idx, err := strconv.Atoi(choice)
+		if err != nil || idx < 0 || idx >= len(st.PlatformOptions) {
+			break
+		}
+		st.Platform = st.PlatformOptions[idx]
+		if st.Category != "" {
+			st.Step = stepUsername
+		} else {
+			st.Step = stepCategory
+		}
+		if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute); err != nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "系统繁忙，请稍后重试。", backMainKeyboard())
+			break
+		}
+		if st.Step == stepCategory {
+			b.promptCategory(chatID, userID, q.Message.MessageID, st)
+		} else {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "请输入用户名：", backMainKeyboard())
+		}
+	case strings.HasPrefix(data, "addcategory:"):
+		if b.store == nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "会话存储不可用，请检查 Redis 配置。", backMainKeyboard())
+			break
+		}
+		st, err := loadState(context.Background(), b.store, stateKey("tg:add", userID))
+		if err != nil || st == nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "操作已过期，请重新开始。", backMainKeyboard())
+			break
+		}
+		choice := strings.TrimPrefix(data, "addcategory:")
+		if choice == "manual" {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "请输入分类名称：", backMainKeyboard())
+			break
+		}
+		idx, err := strconv.Atoi(choice)
+		if err != nil || idx < 0 || idx >= len(st.CategoryOptions) {
+			break
+		}
+		st.Category = st.CategoryOptions[idx]
+		st.Step = stepUsername
+		if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute); err != nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "系统繁忙，请稍后重试。", backMainKeyboard())
+			break
+		}
+		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入用户名：", backMainKeyboard())
+	case strings.HasPrefix(data, "addskip:"):
+		if b.store == nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "会话存储不可用，请检查 Redis 配置。", backMainKeyboard())
+			break
+		}
+		st, err := loadState(context.Background(), b.store, stateKey("tg:add", userID))
+		if err != nil || st == nil {
+			b.updateMenu(chatID, userID, q.Message.MessageID, "操作已过期，请重新开始。", backMainKeyboard())
+			break
+		}
+		action := strings.TrimPrefix(data, "addskip:")
+		switch action {
+		case "email":
+			st.Email = ""
+			st.Step = stepPhone
+			if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute); err != nil {
+				b.updateMenu(chatID, userID, q.Message.MessageID, "系统繁忙，请稍后重试。", backMainKeyboard())
+				break
+			}
+			b.promptOptional(chatID, userID, q.Message.MessageID, "请输入手机号（可跳过）：", "phone")
+		case "phone":
+			st.Phone = ""
+			st.Step = stepNotes
+			if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute); err != nil {
+				b.updateMenu(chatID, userID, q.Message.MessageID, "系统繁忙，请稍后重试。", backMainKeyboard())
+				break
+			}
+			b.promptOptional(chatID, userID, q.Message.MessageID, "请输入备注（可跳过）：", "notes")
+		case "notes":
+			st.Notes = ""
+			b.finishAddFlow(chatID, userID, st)
+		}
 	case strings.HasPrefix(data, "cat:"):
 		if !b.requireUnlockedForQuery(chatID, userID, q.Message.MessageID) {
 			break
@@ -1005,17 +1183,11 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 			b.updateMenu(chatID, userID, q.Message.MessageID, "已删除。", backMainKeyboard())
 		}
 	case data == "acct_add":
-		if b.store == nil {
-			b.reply(chatID, "会话存储不可用，请检查 Redis 配置。")
-			break
+		category := ""
+		if b.store != nil {
+			category, _ = b.store.Get(context.Background(), stateKey("tg:lastcat", userID))
 		}
-		category, _ := b.store.Get(context.Background(), stateKey("tg:lastcat", userID))
-		st := &addState{Step: stepPlatform, Category: category}
-		if err := saveState(context.Background(), b.store, stateKey("tg:add", userID), st, 15*time.Minute); err != nil {
-			b.updateMenu(chatID, userID, q.Message.MessageID, "系统繁忙，请稍后重试。", backMainKeyboard())
-			break
-		}
-		b.updateMenu(chatID, userID, q.Message.MessageID, "请输入平台名称：", backMainKeyboard())
+		b.startAddFlow(chatID, userID, q.Message.MessageID, category)
 	case data == "back:categories":
 		if !b.requireUnlockedForQuery(chatID, userID, q.Message.MessageID) {
 			break

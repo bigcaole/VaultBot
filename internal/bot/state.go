@@ -10,15 +10,17 @@ import (
 )
 
 type addState struct {
-	Step              int    `json:"step"`
-	Platform          string `json:"platform"`
-	Category          string `json:"category"`
-	Username          string `json:"username"`
-	EncryptedPassword string `json:"encrypted_password"`
-	Nonce             string `json:"nonce"`
-	Email             string `json:"email"`
-	Phone             string `json:"phone"`
-	Notes             string `json:"notes"`
+	Step              int      `json:"step"`
+	Platform          string   `json:"platform"`
+	Category          string   `json:"category"`
+	Username          string   `json:"username"`
+	EncryptedPassword string   `json:"encrypted_password"`
+	Nonce             string   `json:"nonce"`
+	Email             string   `json:"email"`
+	Phone             string   `json:"phone"`
+	Notes             string   `json:"notes"`
+	PlatformOptions   []string `json:"platform_options,omitempty"`
+	CategoryOptions   []string `json:"category_options,omitempty"`
 }
 
 type searchState struct {
