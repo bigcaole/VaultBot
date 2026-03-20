@@ -20,6 +20,7 @@ import (
 	"vaultbot/internal/store"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/robfig/cron/v3"
 	"gorm.io/gorm"
 )
 
@@ -45,6 +46,8 @@ const (
 	editTTL          = 10 * time.Minute
 	menuTTL          = 10 * time.Minute
 	passwordQueryTTL = 180 * time.Second
+	botMsgListLimit  = 200
+	botMsgListTTL    = 48 * time.Hour
 )
 
 // StartTelegramBot initializes the bot and starts the update loop.
@@ -89,6 +92,7 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 	if _, err := StartBackupScheduler(ctx, bot, cfg, db); err != nil {
 		return nil, err
 	}
+	b.startDailyPurge()
 	go b.run()
 	return b, nil
 }
@@ -162,7 +166,7 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 	}
 	b.ensureChatCommands(msg.Chat.ID, "operator")
 	if msg.MessageID != 0 {
-		b.deleteMessageLaterForUser(msg.Chat.ID, msg.MessageID, userID)
+		b.deleteUserMessageLater(msg.Chat.ID, msg.MessageID, userID)
 	}
 	if b.store != nil {
 		allowed, err := b.store.Allow(context.Background(), "rate:tg:"+userID, 20, time.Minute)
@@ -560,22 +564,14 @@ func (b *TelegramBot) handleFind(chatID int64, userID string, query string) {
 }
 
 func (b *TelegramBot) reply(chatID int64, text string) {
-	if _, err := b.bot.Send(tgbotapi.NewMessage(chatID, text)); err != nil {
+	msg := tgbotapi.NewMessage(chatID, text)
+	sent, err := b.bot.Send(msg)
+	if err != nil {
 		log.Printf("telegram send failed chat_id=%d err=%v", chatID, err)
+		return
 	}
-}
-
-func (b *TelegramBot) deleteMessageLater(chatID int64, messageID int) {
-	go func() {
-		timer := time.NewTimer(b.cfg.DeleteAfter)
-		defer timer.Stop()
-		select {
-		case <-b.ctx.Done():
-			return
-		case <-timer.C:
-			b.deleteMessageWithRetry(chatID, messageID)
-		}
-	}()
+	userID := strconv.FormatInt(chatID, 10)
+	b.handleBotSentMessage(userID, chatID, sent.MessageID)
 }
 
 func (b *TelegramBot) deleteMessageAfter(chatID int64, messageID int, delay time.Duration) {
@@ -606,7 +602,93 @@ func (b *TelegramBot) deleteMessageWithRetry(chatID int64, messageID int) {
 	}
 }
 
-func (b *TelegramBot) deleteMessageLaterForUser(chatID int64, messageID int, userID string) {
+func (b *TelegramBot) deleteMessageSilently(chatID int64, messageID int) {
+	_, _ = b.bot.Request(tgbotapi.NewDeleteMessage(chatID, messageID))
+}
+
+func (b *TelegramBot) startDailyPurge() {
+	if b.store == nil {
+		return
+	}
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		loc = time.FixedZone("CST", 8*3600)
+	}
+	c := cron.New(cron.WithLocation(loc))
+	_, err = c.AddFunc("59 23 * * *", func() {
+		b.purgeAllBotMessages()
+	})
+	if err != nil {
+		log.Printf("telegram purge schedule failed err=%v", err)
+		return
+	}
+	c.Start()
+	go func() {
+		<-b.ctx.Done()
+		c.Stop()
+	}()
+}
+
+func (b *TelegramBot) recordBotMessage(userID string, messageID int) {
+	if b.store == nil || userID == "" || messageID <= 0 {
+		return
+	}
+	ctx := context.Background()
+	key := "tg:botmsg:" + userID
+	pipe := b.store.Client().Pipeline()
+	pipe.LPush(ctx, key, strconv.Itoa(messageID))
+	pipe.LTrim(ctx, key, 0, botMsgListLimit-1)
+	pipe.Expire(ctx, key, botMsgListTTL)
+	pipe.SAdd(ctx, "tg:botchats", userID)
+	pipe.Expire(ctx, "tg:botchats", botMsgListTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("telegram record bot message failed user_id=%s err=%v", userID, err)
+	}
+}
+
+func (b *TelegramBot) purgeAllBotMessages() {
+	if b.store == nil {
+		return
+	}
+	ctx := context.Background()
+	ids, err := b.store.Client().SMembers(ctx, "tg:botchats").Result()
+	if err != nil {
+		log.Printf("telegram purge list failed err=%v", err)
+		return
+	}
+	for _, userID := range ids {
+		if IsAllowed(b.cfg.BackupReceiverIDs, userID) && !IsAllowed(b.cfg.AllowedUserIDs, userID) {
+			continue
+		}
+		b.purgeBotMessagesForUser(userID)
+	}
+}
+
+func (b *TelegramBot) purgeBotMessagesForUser(userID string) {
+	if b.store == nil || userID == "" {
+		return
+	}
+	ctx := context.Background()
+	key := "tg:botmsg:" + userID
+	ids, err := b.store.Client().LRange(ctx, key, 0, -1).Result()
+	if err != nil {
+		return
+	}
+	chatID, err := strconv.ParseInt(userID, 10, 64)
+	if err != nil {
+		return
+	}
+	for _, idStr := range ids {
+		msgID, err := strconv.Atoi(idStr)
+		if err != nil || msgID <= 0 {
+			continue
+		}
+		b.deleteMessageSilently(chatID, msgID)
+	}
+	_ = b.store.Del(ctx, key)
+}
+
+func (b *TelegramBot) deleteUserMessageLater(chatID int64, messageID int, userID string) {
 	delay := b.userDeleteAfter(userID)
 	if delay <= 0 {
 		return
@@ -625,17 +707,52 @@ func (b *TelegramBot) deleteMessageLaterForUser(chatID int64, messageID int, use
 
 func (b *TelegramBot) userDeleteAfter(userID string) time.Duration {
 	if b.store == nil {
-		return b.cfg.DeleteAfter
+		return b.cfg.UserDeleteAfter
 	}
 	val, err := b.store.Get(context.Background(), "tg:ttl:"+userID)
 	if err != nil || val == "" {
-		return b.cfg.DeleteAfter
+		return b.cfg.UserDeleteAfter
 	}
 	seconds, err := strconv.Atoi(val)
 	if err != nil || seconds <= 0 {
-		return b.cfg.DeleteAfter
+		return b.cfg.UserDeleteAfter
 	}
 	return time.Duration(seconds) * time.Second
+}
+
+func (b *TelegramBot) botDeleteAfter(userID string) time.Duration {
+	if IsAllowed(b.cfg.BackupReceiverIDs, userID) && !IsAllowed(b.cfg.AllowedUserIDs, userID) {
+		return 0
+	}
+	return b.cfg.BotDeleteAfter
+}
+
+func (b *TelegramBot) deleteBotMessageLater(chatID int64, messageID int, userID string) {
+	delay := b.botDeleteAfter(userID)
+	if delay <= 0 {
+		return
+	}
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-timer.C:
+			b.deleteMessageWithRetry(chatID, messageID)
+		}
+	}()
+}
+
+func (b *TelegramBot) handleBotSentMessage(userID string, chatID int64, messageID int) {
+	if messageID <= 0 {
+		return
+	}
+	if b.botDeleteAfter(userID) <= 0 {
+		return
+	}
+	b.recordBotMessage(userID, messageID)
+	b.deleteBotMessageLater(chatID, messageID, userID)
 }
 
 func (b *TelegramBot) clearUserStates(userID string, command string) {
@@ -1296,9 +1413,10 @@ func (b *TelegramBot) sendCopyValue(chatID int64, userID string, id string, fiel
 		return
 	}
 	if field == "password" {
+		b.recordBotMessage(userID, sent.MessageID)
 		b.deleteMessageAfter(chatID, sent.MessageID, passwordQueryTTL)
 	} else {
-		b.deleteMessageLaterForUser(chatID, sent.MessageID, userID)
+		b.handleBotSentMessage(userID, chatID, sent.MessageID)
 	}
 }
 
@@ -1351,8 +1469,10 @@ func (b *TelegramBot) sendBackupReceipt(chatID int64, userID string, text string
 		return
 	}
 	if autoDelete {
-		b.deleteMessageLaterForUser(chatID, sent.MessageID, userID)
+		b.handleBotSentMessage(userID, chatID, sent.MessageID)
+		return
 	}
+	b.handleBotSentMessage(userID, chatID, sent.MessageID)
 }
 
 func (b *TelegramBot) startRestoreFlow(chatID int64, userID string) {
@@ -1568,13 +1688,13 @@ func (b *TelegramBot) updateMenu(chatID int64, userID string, messageID int, tex
 	if messageID > 0 {
 		if b.editMenuMessage(chatID, messageID, text, keyboard) == nil {
 			b.setMenuMsgID(userID, messageID)
-			b.deleteMessageLaterForUser(chatID, messageID, userID)
+			b.handleBotSentMessage(userID, chatID, messageID)
 			return
 		}
 	}
 	if stored := b.getMenuMsgID(userID); stored > 0 {
 		if b.editMenuMessage(chatID, stored, text, keyboard) == nil {
-			b.deleteMessageLaterForUser(chatID, stored, userID)
+			b.handleBotSentMessage(userID, chatID, stored)
 			return
 		}
 	}
@@ -1586,7 +1706,7 @@ func (b *TelegramBot) updateMenu(chatID int64, userID string, messageID int, tex
 		return
 	}
 	b.setMenuMsgID(userID, sent.MessageID)
-	b.deleteMessageLaterForUser(chatID, sent.MessageID, userID)
+	b.handleBotSentMessage(userID, chatID, sent.MessageID)
 }
 
 func (b *TelegramBot) updateMenuNoDelete(chatID int64, userID string, messageID int, text string, keyboard tgbotapi.InlineKeyboardMarkup) {

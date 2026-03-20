@@ -23,7 +23,8 @@ type Config struct {
 	AllowedUserIDs    map[string]struct{}
 	BackupReceiverIDs map[string]struct{}
 	HTTPAddr          string
-	DeleteAfter       time.Duration
+	UserDeleteAfter   time.Duration
+	BotDeleteAfter    time.Duration
 	DBConnectRetries  int
 	DBConnectDelay    time.Duration
 	AllowGroupChat    bool
@@ -50,15 +51,29 @@ func Load() (*Config, error) {
 		cfg.HTTPAddr = ":8080"
 	}
 
-	deleteAfterStr := strings.TrimSpace(os.Getenv("DELETE_AFTER_SECONDS"))
-	if deleteAfterStr == "" {
-		cfg.DeleteAfter = 60 * time.Second
+	userDeleteAfterStr := strings.TrimSpace(os.Getenv("USER_DELETE_AFTER_SECONDS"))
+	if userDeleteAfterStr == "" {
+		userDeleteAfterStr = strings.TrimSpace(os.Getenv("DELETE_AFTER_SECONDS"))
+	}
+	if userDeleteAfterStr == "" {
+		cfg.UserDeleteAfter = 180 * time.Second
 	} else {
-		seconds, err := strconv.Atoi(deleteAfterStr)
+		seconds, err := strconv.Atoi(userDeleteAfterStr)
 		if err != nil || seconds <= 0 {
-			return nil, errors.New("invalid DELETE_AFTER_SECONDS")
+			return nil, errors.New("invalid USER_DELETE_AFTER_SECONDS")
 		}
-		cfg.DeleteAfter = time.Duration(seconds) * time.Second
+		cfg.UserDeleteAfter = time.Duration(seconds) * time.Second
+	}
+
+	botDeleteAfterStr := strings.TrimSpace(os.Getenv("BOT_DELETE_AFTER_SECONDS"))
+	if botDeleteAfterStr == "" {
+		cfg.BotDeleteAfter = 20 * time.Minute
+	} else {
+		seconds, err := strconv.Atoi(botDeleteAfterStr)
+		if err != nil || seconds <= 0 {
+			return nil, errors.New("invalid BOT_DELETE_AFTER_SECONDS")
+		}
+		cfg.BotDeleteAfter = time.Duration(seconds) * time.Second
 	}
 
 	cfg.AllowedUserIDs = parseAllowedIDs(os.Getenv("ALLOWED_USER_IDS"))
