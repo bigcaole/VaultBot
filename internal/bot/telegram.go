@@ -45,9 +45,11 @@ const (
 	searchTTL        = 10 * time.Minute
 	editTTL          = 10 * time.Minute
 	menuTTL          = 10 * time.Minute
-	passwordQueryTTL = 180 * time.Second
+	passwordQueryTTL = 10 * time.Minute
 	botMsgListLimit  = 200
 	botMsgListTTL    = 48 * time.Hour
+	menuMsgListLimit = 20
+	menuMsgListTTL   = 24 * time.Hour
 )
 
 // StartTelegramBot initializes the bot and starts the update loop.
@@ -755,6 +757,61 @@ func (b *TelegramBot) handleBotSentMessage(userID string, chatID int64, messageI
 	b.deleteBotMessageLater(chatID, messageID, userID)
 }
 
+func (b *TelegramBot) recordMenuMessage(userID string, messageID int) {
+	if b.store == nil || userID == "" || messageID <= 0 {
+		return
+	}
+	ctx := context.Background()
+	key := "tg:menuids:" + userID
+	pipe := b.store.Client().Pipeline()
+	pipe.LPush(ctx, key, strconv.Itoa(messageID))
+	pipe.LTrim(ctx, key, 0, menuMsgListLimit-1)
+	pipe.Expire(ctx, key, menuMsgListTTL)
+	if _, err := pipe.Exec(ctx); err != nil {
+		log.Printf("telegram record menu failed user_id=%s err=%v", userID, err)
+	}
+}
+
+func (b *TelegramBot) purgeMenuMessages(userID string, keepID int) {
+	if userID == "" {
+		return
+	}
+	chatID, err := strconv.ParseInt(userID, 10, 64)
+	if err != nil {
+		return
+	}
+	if b.store == nil {
+		b.menuMu.Lock()
+		prev := b.menuMsg[userID]
+		b.menuMu.Unlock()
+		if prev > 0 && prev != keepID {
+			b.deleteMessageSilently(chatID, prev)
+		}
+		return
+	}
+	ctx := context.Background()
+	key := "tg:menuids:" + userID
+	ids, err := b.store.Client().LRange(ctx, key, 0, -1).Result()
+	if err != nil {
+		return
+	}
+	for _, idStr := range ids {
+		msgID, err := strconv.Atoi(idStr)
+		if err != nil || msgID <= 0 {
+			continue
+		}
+		if msgID == keepID {
+			continue
+		}
+		b.deleteMessageSilently(chatID, msgID)
+	}
+	_ = b.store.Del(ctx, key)
+	if keepID > 0 {
+		_ = b.store.Client().RPush(ctx, key, strconv.Itoa(keepID)).Err()
+		_ = b.store.Client().Expire(ctx, key, menuMsgListTTL).Err()
+	}
+}
+
 func (b *TelegramBot) clearUserStates(userID string, command string) {
 	if b.store == nil {
 		return
@@ -774,7 +831,7 @@ func (b *TelegramBot) clearUserStates(userID string, command string) {
 }
 
 func (b *TelegramBot) sendMainMenu(chatID int64, userID string, messageID int) {
-	text := "VaultBot 主菜单："
+	text := "VaultBot 功能中心\n\n请选择一个操作："
 	buttons := []tgbotapi.InlineKeyboardButton{
 		tgbotapi.NewInlineKeyboardButtonData("新增账号", "menu:add"),
 		tgbotapi.NewInlineKeyboardButtonData("分类浏览", "menu:find"),
@@ -789,7 +846,7 @@ func (b *TelegramBot) sendMainMenu(chatID int64, userID string, messageID int) {
 }
 
 func (b *TelegramBot) sendBackupMenu(chatID int64, userID string, messageID int) {
-	text := "备份接收人菜单："
+	text := "备份接收人菜单\n\n请选择一个操作："
 	b.updateMenuNoDelete(chatID, userID, messageID, text, backupMenuKeyboard())
 }
 
@@ -826,7 +883,7 @@ func (b *TelegramBot) sendCategoryMenu(chatID int64, userID string, messageID in
 	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("➕新增分类", "cat_add"))
 	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("返回主菜单", "back:main"))
 	keyboard := buildInlineKeyboard(buttons, 3)
-	b.updateMenu(chatID, userID, messageID, "请选择分类：", keyboard)
+	b.updateMenu(chatID, userID, messageID, "分类列表（点击进入）：", keyboard)
 }
 
 func (b *TelegramBot) sendAccountsMenu(chatID int64, userID string, messageID int, title string, accounts []model.Account) {
@@ -839,7 +896,7 @@ func (b *TelegramBot) sendAccountsMenu(chatID int64, userID string, messageID in
 	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("➕添加账号", "acct_add"))
 	buttons = append(buttons, tgbotapi.NewInlineKeyboardButtonData("返回分类", "back:categories"))
 	keyboard := buildInlineKeyboard(buttons, 1)
-	b.updateMenu(chatID, userID, messageID, title, keyboard)
+	b.updateMenu(chatID, userID, messageID, title+"\n\n请选择平台：", keyboard)
 }
 
 func (b *TelegramBot) sendSearchFieldMenu(chatID int64, userID string, messageID int) {
@@ -1618,15 +1675,13 @@ func (b *TelegramBot) sendDeleteConfirm(chatID int64, userID string, messageID i
 func (b *TelegramBot) sendTTLMenu(chatID int64, userID string, messageID int) {
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("3 分钟", "ttl:180"),
-			tgbotapi.NewInlineKeyboardButtonData("5 分钟", "ttl:300"),
 			tgbotapi.NewInlineKeyboardButtonData("10 分钟", "ttl:600"),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("返回主菜单", "back:main"),
 		),
 	)
-	b.updateMenu(chatID, userID, messageID, "请选择自动删除时间：", keyboard)
+	b.updateMenu(chatID, userID, messageID, "自动删除时间固定为 10 分钟：", keyboard)
 }
 
 func (b *TelegramBot) answerCallback(q *tgbotapi.CallbackQuery, text string) error {
@@ -1688,12 +1743,16 @@ func (b *TelegramBot) updateMenu(chatID int64, userID string, messageID int, tex
 	if messageID > 0 {
 		if b.editMenuMessage(chatID, messageID, text, keyboard) == nil {
 			b.setMenuMsgID(userID, messageID)
+			b.recordMenuMessage(userID, messageID)
+			b.purgeMenuMessages(userID, messageID)
 			b.handleBotSentMessage(userID, chatID, messageID)
 			return
 		}
 	}
 	if stored := b.getMenuMsgID(userID); stored > 0 {
 		if b.editMenuMessage(chatID, stored, text, keyboard) == nil {
+			b.recordMenuMessage(userID, stored)
+			b.purgeMenuMessages(userID, stored)
 			b.handleBotSentMessage(userID, chatID, stored)
 			return
 		}
@@ -1706,6 +1765,8 @@ func (b *TelegramBot) updateMenu(chatID int64, userID string, messageID int, tex
 		return
 	}
 	b.setMenuMsgID(userID, sent.MessageID)
+	b.recordMenuMessage(userID, sent.MessageID)
+	b.purgeMenuMessages(userID, sent.MessageID)
 	b.handleBotSentMessage(userID, chatID, sent.MessageID)
 }
 
@@ -1713,11 +1774,15 @@ func (b *TelegramBot) updateMenuNoDelete(chatID int64, userID string, messageID 
 	if messageID > 0 {
 		if b.editMenuMessage(chatID, messageID, text, keyboard) == nil {
 			b.setMenuMsgID(userID, messageID)
+			b.recordMenuMessage(userID, messageID)
+			b.purgeMenuMessages(userID, messageID)
 			return
 		}
 	}
 	if stored := b.getMenuMsgID(userID); stored > 0 {
 		if b.editMenuMessage(chatID, stored, text, keyboard) == nil {
+			b.recordMenuMessage(userID, stored)
+			b.purgeMenuMessages(userID, stored)
 			return
 		}
 	}
@@ -1729,6 +1794,8 @@ func (b *TelegramBot) updateMenuNoDelete(chatID int64, userID string, messageID 
 		return
 	}
 	b.setMenuMsgID(userID, sent.MessageID)
+	b.recordMenuMessage(userID, sent.MessageID)
+	b.purgeMenuMessages(userID, sent.MessageID)
 }
 
 func (b *TelegramBot) deleteMenuAfter(chatID int64, userID string, messageID int, delay time.Duration) {

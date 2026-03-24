@@ -8,7 +8,7 @@
 - Telegram 机器人交互
 - Redis 用于限流与会话状态管理
 - REST API（API Key 认证）
-- 阅后即焚：密码消息 180 秒删除，机器人输出默认 20 分钟清理
+- 阅后即焚：机器人与用户消息默认 10 分钟清理
 - 清屏任务：北京时间每天 23:59 清理机器人历史消息（不影响备份接收人）
 
 ## 环境变量
@@ -33,8 +33,8 @@
 | `HTTP_ADDR` | HTTP 监听地址，默认 `:8080` | 按部署端口设置 |
 | `TELEGRAM_BOT_TOKEN` | Telegram 机器人 Token | 通过 BotFather 创建机器人获取 |
 | `ALLOWED_USER_IDS` | 白名单用户 ID，逗号分隔（Telegram 数字 ID） | Telegram 可通过 `/id` 机器人或用户信息获取 |
-| `USER_DELETE_AFTER_SECONDS` | 用户输入消息自动删除延迟（秒），默认 180 | 按策略设置 |
-| `BOT_DELETE_AFTER_SECONDS` | 机器人输出消息自动删除延迟（秒），默认 1200 | 按策略设置 |
+| `USER_DELETE_AFTER_SECONDS` | 用户输入消息自动删除延迟（秒），默认 600 | 按策略设置 |
+| `BOT_DELETE_AFTER_SECONDS` | 机器人输出消息自动删除延迟（秒），默认 600 | 按策略设置 |
 | `DB_CONNECT_RETRIES` | 数据库连接重试次数，默认 10 | 按部署稳定性设置 |
 | `DB_CONNECT_DELAY_SECONDS` | 数据库连接重试间隔秒数，默认 3 | 按部署稳定性设置 |
 | `ALLOW_GROUP_CHAT` | 是否允许群聊使用机器人，默认 `false` | 需要群聊时设为 `true` |

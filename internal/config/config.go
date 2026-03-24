@@ -56,7 +56,7 @@ func Load() (*Config, error) {
 		userDeleteAfterStr = strings.TrimSpace(os.Getenv("DELETE_AFTER_SECONDS"))
 	}
 	if userDeleteAfterStr == "" {
-		cfg.UserDeleteAfter = 180 * time.Second
+		cfg.UserDeleteAfter = 10 * time.Minute
 	} else {
 		seconds, err := strconv.Atoi(userDeleteAfterStr)
 		if err != nil || seconds <= 0 {
@@ -67,7 +67,7 @@ func Load() (*Config, error) {
 
 	botDeleteAfterStr := strings.TrimSpace(os.Getenv("BOT_DELETE_AFTER_SECONDS"))
 	if botDeleteAfterStr == "" {
-		cfg.BotDeleteAfter = 20 * time.Minute
+		cfg.BotDeleteAfter = 10 * time.Minute
 	} else {
 		seconds, err := strconv.Atoi(botDeleteAfterStr)
 		if err != nil || seconds <= 0 {
