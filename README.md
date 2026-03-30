@@ -73,7 +73,7 @@ docker build --build-arg PG_MAJOR=18 -t vaultbot .
 ## 备份
 内置定时任务每天 22:00 生成加密备份，并发送到 `BACKUP_RECEIVER_IDS`。主菜单支持手动触发备份，`/backup_test` 可验证备份流程。
 如遇到 `pg_dump` 版本不匹配错误，请将运行镜像的 `PG_MAJOR` 调整为数据库主版本（例如 18/19）。
-恢复流程由备份接收人执行：使用 `/unlock` 解锁后输入 `/restore`，上传 `.enc` 备份文件即可自动解密并导入数据库。
+恢复流程可由操作员或备份接收人执行：使用 `/unlock` 解锁后输入 `/restore`，上传 `.enc` 备份文件即可自动解密并导入数据库。
 
 ## Telegram 指令
 - `/menu`：打开主菜单
@@ -83,12 +83,14 @@ docker build --build-arg PG_MAJOR=18 -t vaultbot .
 - `/find <platform>`：按平台关键词查询（无参数时进入分类浏览）
 - `/search`：按字段搜索
 - `/list`：按分类查看所有记录（不包含密码）
-- `/ttl`：设置自动删除时间（3/5/10 分钟）
+- `/ttl`：查看自动删除时间（固定 10 分钟）
 - `/backup`：手动触发备份（发送到备份接收人）
+- `/restore`：上传备份文件并恢复（需先解锁）
 - `/migrate`：执行旧密钥迁移
 - `/cancel`：取消当前引导流程
 
 主菜单包含“手动备份”按钮，用于立即触发备份并发送到 `BACKUP_RECEIVER_IDS`。
+主菜单包含“恢复数据”按钮，可直接进入备份恢复流程（需先 `/unlock`）。
 主菜单包含“密钥迁移”按钮，用于一键迁移旧密钥数据（需配置 `LEGACY_*`）。
 如果未显式设置 `LEGACY_*`，系统会自动尝试使用当前 `MASTER_KEY` 的原始 32 字节值作为旧密钥进行兼容解密。
 

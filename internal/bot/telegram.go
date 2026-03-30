@@ -74,6 +74,7 @@ func StartTelegramBot(ctx context.Context, cfg *config.Config, db *gorm.DB, stor
 		{Command: "list", Description: "分类浏览"},
 		{Command: "ttl", Description: "设置自动删除"},
 		{Command: "migrate", Description: "密钥迁移"},
+		{Command: "restore", Description: "恢复备份数据"},
 		{Command: "cancel", Description: "取消当前流程"},
 		{Command: "help", Description: "帮助说明"},
 	}
@@ -215,6 +216,8 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 			b.runManualBackup(msg.Chat.ID, userID, true)
 		case "migrate":
 			b.startKeyMigration(msg.Chat.ID, userID)
+		case "restore":
+			b.startRestoreFlow(msg.Chat.ID, userID)
 		case "list":
 			if !b.requireUnlockedForQuery(msg.Chat.ID, userID, 0) {
 				return
@@ -226,6 +229,10 @@ func (b *TelegramBot) handleMessage(msg *tgbotapi.Message) {
 		default:
 			b.sendHelpMenu(msg.Chat.ID, userID, 0)
 		}
+		return
+	}
+	if msg.Document != nil {
+		b.handleRestoreDocument(msg.Chat.ID, userID, msg.Document)
 		return
 	}
 
@@ -838,6 +845,7 @@ func (b *TelegramBot) sendMainMenu(chatID int64, userID string, messageID int) {
 		tgbotapi.NewInlineKeyboardButtonData("字段搜索", "menu:search"),
 		tgbotapi.NewInlineKeyboardButtonData("自动删除", "menu:ttl"),
 		tgbotapi.NewInlineKeyboardButtonData("手动备份", "menu:backup"),
+		tgbotapi.NewInlineKeyboardButtonData("恢复数据", "menu:restore"),
 		tgbotapi.NewInlineKeyboardButtonData("密钥迁移", "menu:migrate"),
 		tgbotapi.NewInlineKeyboardButtonData("帮助", "menu:help"),
 	}
@@ -1101,6 +1109,8 @@ func (b *TelegramBot) handleCallback(q *tgbotapi.CallbackQuery) {
 		}
 		b.updateMenu(chatID, userID, q.Message.MessageID, "已开始备份，完成后会发送到备份接收人。", backMainKeyboard())
 		go b.runManualBackup(chatID, userID, true)
+	case data == "menu:restore":
+		b.startRestoreFlow(chatID, userID)
 	case data == "menu:migrate":
 		keyboard := tgbotapi.NewInlineKeyboardMarkup(
 			tgbotapi.NewInlineKeyboardRow(
@@ -1719,6 +1729,7 @@ func (b *TelegramBot) sendHelpMenu(chatID int64, userID string, messageID int) {
 		"/search - 按字段搜索\n" +
 		"/list - 按分类浏览\n" +
 		"/ttl - 设置自动删除时间\n" +
+		"/restore - 进入恢复流程（上传备份文件）\n" +
 		"/migrate - 迁移旧密钥数据\n" +
 		"手动备份 - 在主菜单点击\n" +
 		"/cancel - 取消当前引导流程\n" +
